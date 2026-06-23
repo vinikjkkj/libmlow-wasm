@@ -1,7 +1,7 @@
 # Packet loss
 
 Realtime audio runs over lossy transports. Opus has two complementary tools for
-this, and `libopus-wasm` exposes both: **packet-loss concealment** (PLC) on the
+this, and `libmlow-wasm` exposes both: **packet-loss concealment** (PLC) on the
 decoder, and **in-band forward error correction** (FEC) across encoder and
 decoder.
 

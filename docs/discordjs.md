@@ -1,12 +1,12 @@
 # discord.js compatibility
 
-`libopus-wasm/discordjs` exposes an `OpusEncoder` class that matches the method
+`libmlow-wasm/discordjs` exposes an `OpusEncoder` class that matches the method
 shape of [`@discordjs/opus`](https://github.com/discordjs/opus). It lets you
 swap a native addon for a WASM build without a node-gyp toolchain, prebuilt
 binaries, or platform-specific install steps.
 
 This entry point uses `node:buffer` and is **Node-only**. For browsers, use the
-main [`libopus-wasm`](api-reference.md) entry directly.
+main [`libmlow-wasm`](api-reference.md) entry directly.
 
 ## The one difference: it loads asynchronously
 
@@ -17,7 +17,7 @@ wait for it.
 ### Recommended: the async factory
 
 ```ts
-import { OpusEncoder } from "libopus-wasm/discordjs";
+import { OpusEncoder } from "libmlow-wasm/discordjs";
 
 const opus = await OpusEncoder.create(48000, 2);
 
@@ -72,7 +72,7 @@ import { OpusEncoder } from "@discordjs/opus";
 const opus = new OpusEncoder(48000, 2);
 
 // After
-import { OpusEncoder } from "libopus-wasm/discordjs";
+import { OpusEncoder } from "libmlow-wasm/discordjs";
 const opus = await OpusEncoder.create(48000, 2);
 ```
 
@@ -85,14 +85,14 @@ opus.setPLP(10);
 ```
 
 The CTL codes are the same integers as `@discordjs/opus`; import the
-[`EncoderCtl` / `DecoderCtl`](ctl.md) enums from `libopus-wasm` for readable
+[`EncoderCtl` / `DecoderCtl`](ctl.md) enums from `libmlow-wasm` for readable
 names.
 
 ## When to use the main API instead
 
 The adapter trades flexibility for familiarity. If you are writing new code, or
 need Float32 PCM, explicit frame sizes, batch helpers, or browser support, use
-the main [`libopus-wasm`](encoding.md) API — it is a superset of what the
+the main [`libmlow-wasm`](encoding.md) API — it is a superset of what the
 adapter offers.
 
 ## Next

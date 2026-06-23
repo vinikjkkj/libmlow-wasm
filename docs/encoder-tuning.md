@@ -1,6 +1,6 @@
 # Encoder tuning
 
-Opus exposes a lot of knobs. `libopus-wasm` surfaces the common ones as typed
+Opus exposes a lot of knobs. `libmlow-wasm` surfaces the common ones as typed
 options and named setters, and the rest through a curated
 [CTL passthrough](ctl.md). Everything here can be set at construction time or
 changed later at runtime.
@@ -92,7 +92,7 @@ Cap the coded audio bandwidth — handy when you deliberately want a narrower,
 cheaper stream:
 
 ```ts
-import { Bandwidth } from "libopus-wasm";
+import { Bandwidth } from "libmlow-wasm";
 
 encoder.setMaxBandwidth(Bandwidth.Wideband); // up to 8 kHz audio bandwidth
 ```

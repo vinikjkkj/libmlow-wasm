@@ -1,4 +1,4 @@
-import createLibopusModule from "./generated/libopus.generated.mjs";
+import createLibmlowModule from "./generated/libmlow.generated.mjs";
 
 export const Application = {
   Voip: 2048,
@@ -42,11 +42,23 @@ export const EncoderCtl = {
   SetExpertFrameDuration: 4040,
   SetPredictionDisabled: 4042,
   SetPhaseInversionDisabled: 4046,
+  SetUseSmpl: 4050,
+  SetEncHpCutoff: 4052,
+  SetSecondaryComplexity: 4054,
+  SetSecondaryBitrate: 4056,
+  SetMlowSubframeImp: 4060,
+  SetMlowUseSpActFlat: 4062,
+  SetMlowVadNlUpdSpeed: 4064,
+  SetMlowVadNonBinary: 4066,
+  SetMlowVadHpSharpness: 4068,
+  SetMlowUseFecRateComp: 4070,
 } as const;
 
 export const DecoderCtl = {
   SetGain: 4034,
   SetPhaseInversionDisabled: 4046,
+  SetUseLpcPostfilter: 4058,
+  SetUseSmpl: 4050,
 } as const;
 
 export type Application = (typeof Application)[keyof typeof Application];
@@ -71,12 +83,15 @@ export type EncoderOptions = CodecOptions & {
   maxBandwidth?: Bandwidth;
   packetLossPercent?: number;
   signal?: Signal;
+  useSmpl?: boolean;
   vbr?: boolean;
   vbrConstraint?: boolean;
 };
 
 export type DecoderOptions = CodecOptions & {
   maxFrameSize?: number;
+  useLpcPostfilter?: boolean;
+  useSmpl?: boolean;
 };
 
 export type DecodeOptions = {
@@ -102,6 +117,19 @@ export type OpusPacketInfo = {
   readonly samples: number;
   readonly samplesPerFrame: number;
   readonly sampleRate: SampleRate;
+};
+
+export type MlowPacketToc = {
+  readonly mode: number;
+  readonly bandwidth: number;
+  readonly samplesPerFrame: number;
+  readonly stereo: number;
+};
+
+export type MlowPacketInfo = OpusPacketInfo & {
+  readonly hasVadFlag: boolean;
+  readonly hasFecContent: boolean;
+  readonly toc: MlowPacketToc;
 };
 
 export type OpusEncoderHandle = {
@@ -155,7 +183,7 @@ const ENCODER_INTEGER_CTL_REQUESTS = new Set<number>(Object.values(EncoderCtl));
 const ENCODE_FRAME_DURATIONS_MS = [2.5, 5, 10, 20, 40, 60] as const;
 const VALID_SAMPLE_RATES: readonly SampleRate[] = [8000, 12000, 16000, 24000, 48000];
 
-type LibopusModule = Awaited<ReturnType<typeof createLibopusModule>>;
+type LibmlowModule = Awaited<ReturnType<typeof createLibmlowModule>>;
 type NormalizedEncoderOptions = {
   application: Application;
   bitrate: number;
@@ -168,6 +196,7 @@ type NormalizedEncoderOptions = {
   packetLossPercent: number;
   sampleRate: SampleRate;
   signal: Signal;
+  useSmpl: boolean;
   vbr: boolean | undefined;
   vbrConstraint: boolean | undefined;
 };
@@ -176,9 +205,11 @@ type NormalizedDecoderOptions = {
   channels: ChannelCount;
   maxFrameSize: number;
   sampleRate: SampleRate;
+  useLpcPostfilter: boolean | undefined;
+  useSmpl: boolean;
 };
 
-let modulePromise: Promise<LibopusModule> | undefined;
+let modulePromise: Promise<LibmlowModule> | undefined;
 
 export async function loadLibopus(): Promise<{
   version: string;
@@ -224,7 +255,7 @@ export async function getPacketInfo(
     }
     const channels = module._oc_packet_get_nb_channels(packetPtr);
     if (channels !== 1 && channels !== 2) {
-      throw new OpusError(channels, `libopus getPacketInfo failed (${channels}): invalid channel count`);
+      throw new OpusError(channels, `libmlow getPacketInfo failed (${channels}): invalid channel count`);
     }
     const bandwidth = module._oc_packet_get_bandwidth(packetPtr);
     if (bandwidth < 0) {
@@ -245,20 +276,76 @@ export async function getPacketInfo(
   }
 }
 
+export async function getMlowPacketInfo(
+  packet: Uint8Array,
+  options: PacketInfoOptions = {},
+): Promise<MlowPacketInfo> {
+  const sampleRate = options.sampleRate ?? DEFAULT_SAMPLE_RATE;
+  validateCodecOptions({ channels: DEFAULT_CHANNELS, sampleRate });
+  if (packet.byteLength === 0) {
+    throw new RangeError("packet must not be empty");
+  }
+  const module = await getModule();
+  const packetPtr = checkedMalloc(module, packet.byteLength);
+  const tocPtr = checkedMalloc(module, 4 * 4);
+  try {
+    module.HEAPU8.set(packet, packetPtr);
+    const frames = module._oc_mlow_packet_parse(packetPtr, packet.byteLength);
+    if (frames < 0) {
+      throw createOpusError(module, frames, "getMlowPacketInfo");
+    }
+    const samples = module._oc_mlow_packet_get_nb_samples(packetPtr, packet.byteLength, sampleRate);
+    if (samples < 0) {
+      throw createOpusError(module, samples, "getMlowPacketInfo");
+    }
+    const channels = module._oc_mlow_packet_get_nb_channels(packetPtr);
+    if (channels !== 1 && channels !== 2) {
+      throw new OpusError(channels, `libmlow getMlowPacketInfo failed (${channels}): invalid channel count`);
+    }
+    const bandwidth = module._oc_mlow_packet_get_bandwidth(packetPtr);
+    if (bandwidth < 0) {
+      throw createOpusError(module, bandwidth, "getMlowPacketInfo");
+    }
+    validateBandwidth(bandwidth as Bandwidth, "packet bandwidth");
+    module._oc_mlow_packet_parse_toc(packetPtr, tocPtr);
+    const tocIndex = tocPtr >> 2;
+    return {
+      bandwidth: bandwidth as Bandwidth,
+      channels,
+      durationMs: (samples / sampleRate) * 1000,
+      frames,
+      hasFecContent: module._oc_mlow_packet_has_fec_content(packetPtr) !== 0,
+      hasVadFlag: module._oc_mlow_packet_has_vad_flag(packetPtr) !== 0,
+      samples,
+      samplesPerFrame: module._oc_mlow_packet_get_samples_per_frame(packetPtr, sampleRate),
+      sampleRate,
+      toc: {
+        mode: module.HEAP32[tocIndex] ?? 0,
+        bandwidth: module.HEAP32[tocIndex + 1] ?? 0,
+        samplesPerFrame: module.HEAP32[tocIndex + 2] ?? 0,
+        stereo: module.HEAP32[tocIndex + 3] ?? 0,
+      },
+    };
+  } finally {
+    module._free(tocPtr);
+    module._free(packetPtr);
+  }
+}
+
 class WasmOpusEncoder implements OpusEncoderHandle {
   readonly application: Application;
   readonly channels: ChannelCount;
   readonly frameSize: number;
   readonly sampleRate: SampleRate;
   #freed = false;
-  #module: LibopusModule;
+  #module: LibmlowModule;
   #packetBytes = 0;
   #packetPtr = 0;
   #pcmBytes = 0;
   #pcmPtr = 0;
   #ptr: number;
 
-  constructor(module: LibopusModule, options: NormalizedEncoderOptions) {
+  constructor(module: LibmlowModule, options: NormalizedEncoderOptions) {
     this.#module = module;
     this.application = options.application;
     this.channels = options.channels;
@@ -294,6 +381,10 @@ class WasmOpusEncoder implements OpusEncoderHandle {
     }
     if (options.vbrConstraint !== undefined) {
       this.setVbrConstraint(options.vbrConstraint);
+    }
+    if (options.useSmpl) {
+      this.encoderCtl(EncoderCtl.SetLsbDepth, 16);
+      this.encoderCtl(EncoderCtl.SetUseSmpl, 1);
     }
   }
 
@@ -511,14 +602,14 @@ class WasmOpusDecoder implements OpusDecoderHandle {
   readonly maxFrameSize: number;
   readonly sampleRate: SampleRate;
   #freed = false;
-  #module: LibopusModule;
+  #module: LibmlowModule;
   #packetBytes = 0;
   #packetPtr = 0;
   #pcmBytes = 0;
   #pcmPtr = 0;
   #ptr: number;
 
-  constructor(module: LibopusModule, options: NormalizedDecoderOptions) {
+  constructor(module: LibmlowModule, options: NormalizedDecoderOptions) {
     this.#module = module;
     this.channels = options.channels;
     this.maxFrameSize = options.maxFrameSize;
@@ -533,6 +624,12 @@ class WasmOpusDecoder implements OpusDecoderHandle {
       this.#ptr = ptr;
     } finally {
       module._free(errorPtr);
+    }
+    if (options.useLpcPostfilter !== undefined) {
+      this.decoderCtl(DecoderCtl.SetUseLpcPostfilter, options.useLpcPostfilter ? 1 : 0);
+    }
+    if (options.useSmpl) {
+      this.decoderCtl(DecoderCtl.SetUseSmpl, 1);
     }
   }
 
@@ -745,8 +842,8 @@ export function isOpusError(error: unknown): error is OpusError {
   );
 }
 
-async function getModule(): Promise<LibopusModule> {
-  modulePromise ??= createLibopusModule();
+async function getModule(): Promise<LibmlowModule> {
+  modulePromise ??= createLibmlowModule();
   return await modulePromise;
 }
 
@@ -759,9 +856,9 @@ function resolveOpusErrorCodeName(code: number): OpusErrorCodeName | undefined {
   return undefined;
 }
 
-function createOpusError(module: LibopusModule, code: number, operation: string): OpusError {
+function createOpusError(module: LibmlowModule, code: number, operation: string): OpusError {
   const message = module.UTF8ToString(module._oc_strerror(code));
-  return new OpusError(code, `libopus ${operation} failed (${code}): ${message}`, operation);
+  return new OpusError(code, `libmlow ${operation} failed (${code}): ${message}`, operation);
 }
 
 function toUint8Array(input: Int16Array | Uint8Array): Uint8Array {
@@ -791,6 +888,7 @@ function normalizeEncoderOptions(options: EncoderOptions): NormalizedEncoderOpti
     packetLossPercent: options.packetLossPercent ?? 0,
     sampleRate,
     signal: options.signal ?? Signal.Auto,
+    useSmpl: options.useSmpl === true,
     vbr: options.vbr,
     vbrConstraint: options.vbrConstraint,
   };
@@ -802,7 +900,7 @@ function normalizeDecoderOptions(options: DecoderOptions): NormalizedDecoderOpti
   validateCodecOptions({ channels, sampleRate });
   const maxFrameSize = options.maxFrameSize ?? samplesForDuration(sampleRate, MAX_PACKET_DURATION_MS);
   validateDecodeCapacity(maxFrameSize, sampleRate, "maxFrameSize");
-  return { channels, maxFrameSize, sampleRate };
+  return { channels, maxFrameSize, sampleRate, useLpcPostfilter: options.useLpcPostfilter, useSmpl: options.useSmpl === true };
 }
 
 function samplesForDuration(sampleRate: SampleRate, durationMs: number): number {
@@ -896,7 +994,7 @@ function validateIntegerRange(value: number, min: number, max: number, name: str
   }
 }
 
-function checkedMalloc(module: LibopusModule, bytes: number): number {
+function checkedMalloc(module: LibmlowModule, bytes: number): number {
   const ptr = module._malloc(bytes);
   if (ptr === 0) {
     throw new Error(`WASM malloc failed for ${bytes} bytes`);

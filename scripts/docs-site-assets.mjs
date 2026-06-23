@@ -283,7 +283,7 @@ export function themeToggleHtml() {
 }
 
 export function faviconSvg() {
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="libopus-wasm">
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="libmlow-wasm">
 <rect width="64" height="64" rx="14" fill="#0d0f16"/>
 <rect x="13" y="34" width="7" height="16" rx="3.5" fill="#6d4aff"/>
 <rect x="23" y="17" width="7" height="33" rx="3.5" fill="#4f7bff"/>

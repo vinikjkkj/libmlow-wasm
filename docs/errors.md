@@ -27,7 +27,7 @@ When libopus itself returns an error code — a malformed packet handed to
 `decode` or `getPacketInfo`, for example — it surfaces as an `OpusError`:
 
 ```ts
-import { OpusErrorCode, isOpusError } from "libopus-wasm";
+import { OpusErrorCode, isOpusError } from "libmlow-wasm";
 
 try {
   decoder.decode(corruptPacket);

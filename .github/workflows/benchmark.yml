@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  native-comparison:
-    name: WASM vs native
+  wasm:
+    name: WASM throughput
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

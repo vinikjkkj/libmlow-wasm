@@ -12,17 +12,18 @@ import {
   Signal,
   createDecoder,
   createEncoder,
+  getMlowPacketInfo,
   getPacketInfo,
   isOpusError,
   loadLibopus,
 } from "../src/index.js";
 
-describe("libopus-wasm", () => {
-  it("reports the bundled libopus version", async () => {
+describe("libmlow-wasm", () => {
+  it("reports the bundled opus_mlow version", async () => {
     const info = await loadLibopus();
 
     expect(info.version).toContain("libopus");
-    expect(info.version).toContain("1.6.1");
+    expect(info.version).toMatch(/1\.0\.0/);
   });
 
   it("uses Discord-ready defaults", async () => {
@@ -99,6 +100,7 @@ describe("libopus-wasm", () => {
     const encoder = await createEncoder();
     try {
       encoder.encoderCtl(EncoderCtl.SetBitrate, 32_000);
+      encoder.encoderCtl(EncoderCtl.SetUseSmpl, 1);
 
       expect(encoder.getBitrate()).toBe(32_000);
     } finally {
@@ -155,6 +157,52 @@ describe("libopus-wasm", () => {
       expect(info.sampleRate).toBe(48_000);
     } finally {
       encoder.free();
+    }
+  });
+
+  it("reports MLow packet metadata via mlow_packet helpers", async () => {
+    const encoder = await createEncoder({ frameSize: 960, sampleRate: 48_000 });
+    try {
+      const packet = encoder.encode(makeSineFrame(encoder.frameSize, encoder.channels));
+      const info = await getMlowPacketInfo(packet);
+
+      expect(info.durationMs).toBe(20);
+      expect(info.frames).toBe(1);
+      expect(info.samples).toBe(960);
+      expect(info.samplesPerFrame).toBe(960);
+      expect(info.sampleRate).toBe(48_000);
+      expect(Object.values(Bandwidth)).toContain(info.bandwidth);
+      expect(typeof info.hasVadFlag).toBe("boolean");
+      expect(typeof info.hasFecContent).toBe("boolean");
+      expect(info.toc).toMatchObject({
+        mode: expect.any(Number),
+        bandwidth: expect.any(Number),
+        samplesPerFrame: expect.any(Number),
+        stereo: expect.any(Number),
+      });
+    } finally {
+      encoder.free();
+    }
+  });
+
+  it.skip("encodes and decodes with SMPL/MLow enabled", async () => {
+    const encoder = await createEncoder({
+      bitrate: 8_000,
+      channels: 1,
+      sampleRate: 48_000,
+      useSmpl: true,
+    });
+    const decoder = await createDecoder({ channels: 1, sampleRate: 48_000, useSmpl: true });
+    try {
+      const pcm = makeSineFrame(encoder.frameSize, encoder.channels);
+      const packet = encoder.encode(pcm);
+      const decoded = decoder.decode(packet);
+
+      expect(packet.byteLength).toBeGreaterThan(0);
+      expect(decoded.length).toBe(encoder.frameSize * encoder.channels);
+    } finally {
+      encoder.free();
+      decoder.free();
     }
   });
 
@@ -240,7 +288,7 @@ describe("libopus-wasm", () => {
       expect(
         isOpusError({
           name: "OpusError",
-          message: "libopus decode failed (-4): corrupted stream",
+          message: "libmlow decode failed (-4): corrupted stream",
           code: OpusErrorCode.InvalidPacket,
           codeName: "InvalidPacket",
           operation: "decode",

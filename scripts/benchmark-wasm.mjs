@@ -1,43 +1,31 @@
 import { performance } from "node:perf_hooks";
-import discordOpus from "@discordjs/opus";
 import { Application, createDecoder, createEncoder, loadLibopus } from "../dist/index.js";
 
 const sampleRate = 48_000;
 const channels = 2;
 const frameSize = 960;
-const warmupIterations = Number(process.env.LIBOPUS_WASM_BENCH_WARMUP ?? 1_000);
-const iterations = Number(process.env.LIBOPUS_WASM_BENCH_ITERATIONS ?? 20_000);
+const warmupIterations = Number(process.env.LIBMLOW_WASM_BENCH_WARMUP ?? 1_000);
+const iterations = Number(process.env.LIBMLOW_WASM_BENCH_ITERATIONS ?? 20_000);
 const pcm = createToneFrame();
-const pcmBuffer = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
 
-const wasmEncoder = await createEncoder({
+const encoder = await createEncoder({
   application: Application.Audio,
   bitrate: 64_000,
   channels,
   sampleRate,
 });
-const wasmDecoder = await createDecoder({ channels, sampleRate });
-const { OpusEncoder: NativeOpusEncoder } = discordOpus;
-const native = new NativeOpusEncoder(sampleRate, channels);
-native.setBitrate(64_000);
+const decoder = await createDecoder({ channels, sampleRate });
 
 try {
-  const wasmPacket = wasmEncoder.encode(pcm, { frameSize });
-  const nativePacket = native.encode(pcmBuffer, frameSize);
+  const packet = encoder.encode(pcm, { frameSize });
   const libopus = await loadLibopus();
 
   const results = [
     bench("wasm encode", warmupIterations, iterations, () => {
-      wasmEncoder.encode(pcm, { frameSize });
-    }),
-    bench("native encode", warmupIterations, iterations, () => {
-      native.encode(pcmBuffer, frameSize);
+      encoder.encode(pcm, { frameSize });
     }),
     bench("wasm decode", warmupIterations, iterations, () => {
-      wasmDecoder.decode(wasmPacket, { maxFrameSize: frameSize });
-    }),
-    bench("native decode", warmupIterations, iterations, () => {
-      native.decode(nativePacket, frameSize);
+      decoder.decode(packet, { maxFrameSize: frameSize });
     }),
   ];
 
@@ -45,14 +33,10 @@ try {
     JSON.stringify(
       {
         channels,
+        codec: libopus.version,
         frameSize,
         iterations,
-        libopus: libopus.version,
-        native: "@discordjs/opus",
-        packetBytes: {
-          native: nativePacket.byteLength,
-          wasm: wasmPacket.byteLength,
-        },
+        packetBytes: packet.byteLength,
         results,
         sampleRate,
         warmupIterations,
@@ -62,8 +46,8 @@ try {
     ),
   );
 } finally {
-  wasmDecoder.free();
-  wasmEncoder.free();
+  decoder.free();
+  encoder.free();
 }
 
 function bench(name, warmup, count, fn) {

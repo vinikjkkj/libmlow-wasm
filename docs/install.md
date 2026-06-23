@@ -1,17 +1,21 @@
 # Install
 
-`libopus-wasm` ships precompiled WebAssembly. Installing it pulls no native
+`libmlow-wasm` ships precompiled WebAssembly. Installing it pulls no native
 toolchain and runs no build step — the `.wasm` is inlined into the published
 JavaScript.
+
+This package is a fork of [libopus-wasm](https://github.com/openclaw/libopus-wasm)
+built against [opus_mlow](https://github.com/edgardmessias/opus_mlow) instead of
+upstream libopus.
 
 ## Add the package
 
 ```bash
-npm install libopus-wasm
+npm install libmlow-wasm
 # or
-pnpm add libopus-wasm
+pnpm add libmlow-wasm
 # or
-yarn add libopus-wasm
+yarn add libmlow-wasm
 ```
 
 ## Requirements
@@ -26,12 +30,12 @@ yarn add libopus-wasm
 
 | Import | Runtime | Use it for |
 | --- | --- | --- |
-| `libopus-wasm` | Browser + Node | The full encoder/decoder API. Browser-safe. |
-| `libopus-wasm/discordjs` | Node only | A drop-in for `@discordjs/opus`. Uses `Buffer`. |
+| `libmlow-wasm` | Browser + Node | The full encoder/decoder API. Browser-safe. |
+| `libmlow-wasm/discordjs` | Node only | A drop-in for `@discordjs/opus`. Uses `Buffer`. |
 
 ```ts
-import { createEncoder, createDecoder } from "libopus-wasm";
-import { OpusEncoder } from "libopus-wasm/discordjs";
+import { createEncoder, createDecoder } from "libmlow-wasm";
+import { OpusEncoder } from "libmlow-wasm/discordjs";
 ```
 
 The main entry is browser-safe and self-contained. The `discordjs` adapter
@@ -54,7 +58,7 @@ The package is pure ESM with bundled TypeScript declarations:
 To consume it from CommonJS, use a dynamic `import()`:
 
 ```js
-const { createEncoder } = await import("libopus-wasm");
+const { createEncoder } = await import("libmlow-wasm");
 ```
 
 ## TypeScript

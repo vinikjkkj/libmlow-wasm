@@ -62,6 +62,26 @@ int oc_encoder_ctl(OpusEncoder *encoder, int request, int value) {
       return opus_encoder_ctl(encoder, OPUS_SET_PREDICTION_DISABLED(value));
     case OPUS_SET_PHASE_INVERSION_DISABLED_REQUEST:
       return opus_encoder_ctl(encoder, OPUS_SET_PHASE_INVERSION_DISABLED(value));
+    case OPUS_SET_USE_SMPL_REQUEST:
+      return opus_encoder_ctl(encoder, OPUS_SET_USING_SMPL(value));
+    case OPUS_SET_ENC_HP_CUTOFF_REQUEST:
+      return opus_encoder_ctl(encoder, OPUS_SET_ENC_HP_CUTOFF(value));
+    case OPUS_SET_SECONDARY_COMPLEXITY_REQUEST:
+      return opus_encoder_ctl(encoder, OPUS_SET_SECONDARY_COMPLEXITY(value));
+    case OPUS_SET_SECONDARY_BITRATE_REQUEST:
+      return opus_encoder_ctl(encoder, OPUS_SET_SECONDARY_BITRATE(value));
+    case OPUS_SET_MLOW_SUBFRAME_IMP_REQUEST:
+      return opus_encoder_ctl(encoder, OPUS_SET_MLOW_SUBFRAME_IMP(value));
+    case OPUS_SET_MLOW_USE_SP_ACT_FLAT_REQUEST:
+      return opus_encoder_ctl(encoder, OPUS_SET_MLOW_USE_SP_ACT_FLAT(value));
+    case OPUS_SET_MLOW_VAD_NL_UPD_SPEED_REQUEST:
+      return opus_encoder_ctl(encoder, OPUS_SET_MLOW_VAD_NL_UPD_SPEED(value));
+    case OPUS_SET_MLOW_VAD_NON_BINARY_REQUEST:
+      return opus_encoder_ctl(encoder, OPUS_SET_MLOW_VAD_NON_BINARY(value));
+    case OPUS_SET_MLOW_VAD_HP_SHARPNESS_REQUEST:
+      return opus_encoder_ctl(encoder, OPUS_SET_MLOW_VAD_HP_SHARPNESS(value));
+    case OPUS_SET_MLOW_USE_FEC_RATE_COMP_REQUEST:
+      return opus_encoder_ctl(encoder, OPUS_SET_MLOW_USE_FEC_RATE_COMP(value));
     default:
       return OPUS_UNIMPLEMENTED;
   }
@@ -175,9 +195,53 @@ int oc_decoder_ctl(OpusDecoder *decoder, int request, int value) {
       return opus_decoder_ctl(decoder, OPUS_SET_GAIN(value));
     case OPUS_SET_PHASE_INVERSION_DISABLED_REQUEST:
       return opus_decoder_ctl(decoder, OPUS_SET_PHASE_INVERSION_DISABLED(value));
+    case OPUS_SET_USE_LPC_POSTFILTER_REQUEST:
+      return opus_decoder_ctl(decoder, OPUS_SET_USE_LPC_POSTFILTER(value));
+    case OPUS_SET_USE_SMPL_REQUEST:
+      return opus_decoder_ctl(decoder, OPUS_SET_USING_SMPL(value));
     default:
       return OPUS_UNIMPLEMENTED;
   }
+}
+
+int oc_mlow_packet_parse(const unsigned char *data, opus_int32 len) {
+  unsigned char toc = 0;
+  const unsigned char *frames[48] = {0};
+  opus_int16 frame_sizes[48] = {0};
+  int payload_offset = 0;
+  return mlow_packet_parse(data, len, &toc, frames, frame_sizes, &payload_offset);
+}
+
+int oc_mlow_packet_get_bandwidth(const unsigned char *data) {
+  return mlow_packet_get_bandwidth(data);
+}
+
+int oc_mlow_packet_get_nb_channels(const unsigned char *data) {
+  return mlow_packet_get_nb_channels(data);
+}
+
+int oc_mlow_packet_get_nb_frames(const unsigned char *data, opus_int32 len) {
+  return mlow_packet_get_nb_frames(data, len);
+}
+
+int oc_mlow_packet_get_nb_samples(const unsigned char *data, opus_int32 len, opus_int32 sample_rate) {
+  return mlow_packet_get_nb_samples(data, len, sample_rate);
+}
+
+int oc_mlow_packet_get_samples_per_frame(const unsigned char *data, opus_int32 sample_rate) {
+  return mlow_packet_get_samples_per_frame(data, sample_rate);
+}
+
+int oc_mlow_packet_has_vad_flag(const unsigned char *data) {
+  return mlow_packet_has_vad_flag(data);
+}
+
+int oc_mlow_packet_has_fec_content(const unsigned char *data) {
+  return mlow_packet_has_fec_content(data);
+}
+
+void oc_mlow_packet_parse_toc(const unsigned char *data, int *toc_fields) {
+  mlow_packet_parse_toc(data, toc_fields);
 }
 
 const char *oc_strerror(int code) {

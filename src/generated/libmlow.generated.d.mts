@@ -1,4 +1,4 @@
-type LibopusModule = {
+type LibmlowModule = {
   HEAP32: Int32Array;
   HEAP16: Int16Array;
   HEAPF32: Float32Array;
@@ -51,6 +51,19 @@ type LibopusModule = {
   _oc_encoder_ctl_get_in_dtx: (encoderPtr: number) => number;
   _oc_encoder_ctl_get_lookahead: (encoderPtr: number) => number;
   _oc_get_version_string: () => number;
+  _oc_mlow_packet_get_bandwidth: (packetPtr: number) => number;
+  _oc_mlow_packet_get_nb_channels: (packetPtr: number) => number;
+  _oc_mlow_packet_get_nb_frames: (packetPtr: number, packetLength: number) => number;
+  _oc_mlow_packet_get_nb_samples: (
+    packetPtr: number,
+    packetLength: number,
+    sampleRate: number,
+  ) => number;
+  _oc_mlow_packet_get_samples_per_frame: (packetPtr: number, sampleRate: number) => number;
+  _oc_mlow_packet_has_fec_content: (packetPtr: number) => number;
+  _oc_mlow_packet_has_vad_flag: (packetPtr: number) => number;
+  _oc_mlow_packet_parse: (packetPtr: number, packetLength: number) => number;
+  _oc_mlow_packet_parse_toc: (packetPtr: number, tocFieldsPtr: number) => void;
   _oc_packet_get_bandwidth: (packetPtr: number) => number;
   _oc_packet_get_nb_channels: (packetPtr: number) => number;
   _oc_packet_get_nb_frames: (packetPtr: number, packetLength: number) => number;
@@ -69,4 +82,4 @@ type LibopusModule = {
   _oc_strerror: (code: number) => number;
 };
 
-export default function createLibopusModule(): Promise<LibopusModule>;
+export default function createLibmlowModule(): Promise<LibmlowModule>;

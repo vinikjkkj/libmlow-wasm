@@ -6,7 +6,7 @@ across calls and never adds container framing — one `encode` in, one packet ou
 ## Create an encoder
 
 ```ts
-import { createEncoder, Application, Signal } from "libopus-wasm";
+import { createEncoder, Application, Signal } from "libmlow-wasm";
 
 const encoder = await createEncoder({
   sampleRate: 48000, // 8000 | 12000 | 16000 | 24000 | 48000

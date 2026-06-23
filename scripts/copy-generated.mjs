@@ -9,6 +9,6 @@ const outputDir = path.join(repoRoot, "dist", "generated");
 
 await fs.mkdir(outputDir, { recursive: true });
 await fs.copyFile(
-  path.join(sourceDir, "libopus.generated.mjs"),
-  path.join(outputDir, "libopus.generated.mjs"),
+  path.join(sourceDir, "libmlow.generated.mjs"),
+  path.join(outputDir, "libmlow.generated.mjs"),
 );

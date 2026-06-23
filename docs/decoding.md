@@ -6,7 +6,7 @@ is stateful per stream but works one packet at a time.
 ## Create a decoder
 
 ```ts
-import { createDecoder } from "libopus-wasm";
+import { createDecoder } from "libmlow-wasm";
 
 const decoder = await createDecoder({
   sampleRate: 48000, // must match how the stream was encoded
@@ -78,7 +78,7 @@ A corrupt or truncated packet makes libopus return an error, surfaced as an
 `OpusError` with the libopus code and a readable message:
 
 ```ts
-import { OpusError } from "libopus-wasm";
+import { OpusError } from "libmlow-wasm";
 
 try {
   decoder.decode(new Uint8Array([1, 2, 3, 4]));

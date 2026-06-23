@@ -1,6 +1,6 @@
 # Browser usage
 
-The main `libopus-wasm` entry is built for the browser. The WebAssembly binary
+The main `libmlow-wasm` entry is built for the browser. The WebAssembly binary
 is inlined into the JavaScript as a single-file ES module, so there is:
 
 - no second network request for a `.wasm` file,
@@ -10,7 +10,7 @@ is inlined into the JavaScript as a single-file ES module, so there is:
 Import it and go:
 
 ```ts
-import { createEncoder, createDecoder } from "libopus-wasm";
+import { createEncoder, createDecoder } from "libmlow-wasm";
 
 const encoder = await createEncoder();
 ```
@@ -35,7 +35,7 @@ piece of glue you write is buffering the worklet's fixed 128-sample blocks up to
 a full Opus frame (960 samples per channel for 20 ms at 48 kHz).
 
 ```ts
-import { createEncoder } from "libopus-wasm";
+import { createEncoder } from "libmlow-wasm";
 
 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 const ctx = new AudioContext({ sampleRate: 48000 });

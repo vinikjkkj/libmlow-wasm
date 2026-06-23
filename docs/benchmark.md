@@ -1,8 +1,8 @@
 # Benchmark
 
 A WASM codec is only useful if it keeps up with realtime. The repo ships a
-benchmark that pits `libopus-wasm` against the native
-[`@discordjs/opus`](https://github.com/discordjs/opus) addon on the same frames.
+WASM-only throughput benchmark for encode and decode on fixed 48 kHz stereo
+20 ms frames.
 
 ## Run it
 
@@ -10,35 +10,37 @@ benchmark that pits `libopus-wasm` against the native
 pnpm benchmark
 ```
 
-This builds the library and then runs `scripts/benchmark-native.mjs`. The native
-comparison requires `@discordjs/opus` to build on the host (a dev dependency),
-so a working node-gyp toolchain is needed for the benchmark — though never for
-using `libopus-wasm` itself.
+This builds the library and runs `scripts/benchmark-wasm.mjs`. No native addons
+or node-gyp toolchain are required.
 
-## Sample result
+Tune warmup and iteration counts with environment variables:
 
-Apple Silicon, Node 26, 20,000 iterations, 48 kHz stereo, 20 ms frames:
-
-```text
-wasm encode:   15,304 ops/sec
-native encode: 15,741 ops/sec
-wasm decode:   38,416 ops/sec
-native decode: 41,280 ops/sec
+```bash
+LIBMLOW_WASM_BENCH_WARMUP=500 LIBMLOW_WASM_BENCH_ITERATIONS=10000 pnpm benchmark
 ```
 
-Encode runs within a few percent of native; decode is close behind. For 20 ms
-frames that is far above the ~50 frames/sec a single realtime stream needs, with
-ample headroom for many concurrent streams.
+## Sample output
 
-> These numbers are a regression check, not a portable score. Absolute
-> throughput depends on CPU, Node version, and Emscripten flags, so compare runs
-> on the same machine rather than against the figures above.
+```json
+{
+  "codec": "libopus 1.4 ...",
+  "results": [
+    { "name": "wasm encode", "opsPerSecond": 15304, "durationMs": 1308.15 },
+    { "name": "wasm decode", "opsPerSecond": 38416, "durationMs": 520.61 }
+  ]
+}
+```
+
+For 20 ms frames, ~50 ops/sec is enough for one realtime stream. Typical results
+are orders of magnitude above that, leaving headroom for many concurrent streams.
+
+> These numbers are a regression check, not a portable score. Throughput depends
+> on CPU, Node version, and Emscripten flags — compare runs on the same machine.
 
 ## In CI
 
 The GitHub Actions workflow exposes a manual **Benchmark** job
-(`workflow_dispatch`) so you can capture numbers on the CI runner on demand,
-separate from the per-commit test run.
+(`workflow_dispatch`) so you can capture WASM numbers on the CI runner on demand.
 
 ## Next
 

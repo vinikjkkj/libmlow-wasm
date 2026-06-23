@@ -6,7 +6,7 @@ audio. It is the cheap way to validate an incoming packet or to learn its shape
 before you hand it to a decoder.
 
 ```ts
-import { getPacketInfo } from "libopus-wasm";
+import { getPacketInfo } from "libmlow-wasm";
 
 const info = await getPacketInfo(packet);
 info.durationMs;      // 20
@@ -69,7 +69,7 @@ A corrupt or truncated packet surfaces the libopus error as an
 reaching WASM.
 
 ```ts
-import { OpusError } from "libopus-wasm";
+import { OpusError } from "libmlow-wasm";
 
 try {
   await getPacketInfo(suspectPacket);

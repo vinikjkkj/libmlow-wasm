@@ -6,13 +6,13 @@ you wire it into a real pipeline.
 ## 1. Install
 
 ```bash
-npm install libopus-wasm
+npm install libmlow-wasm
 ```
 
 ## 2. Encode and decode a frame
 
 ```ts
-import { createEncoder, createDecoder } from "libopus-wasm";
+import { createEncoder, createDecoder } from "libmlow-wasm";
 
 // Both factories are async: the WASM module loads once, lazily, and is shared.
 const encoder = await createEncoder();

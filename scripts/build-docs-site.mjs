@@ -7,16 +7,16 @@ import { css, faviconSvg, js, preThemeScript, themeToggleHtml } from "./docs-sit
 const root = process.cwd();
 const docsDir = path.join(root, "docs");
 const outDir = path.join(root, "dist", "docs-site");
-const repoBase = "https://github.com/openclaw/libopus-wasm";
+const repoBase = "https://github.com/edgardmessias/libmlow-wasm";
 const repoEditBase = `${repoBase}/edit/main/docs`;
 const cname = readCname();
 const siteBase = cname ? `https://${cname}` : "";
 
-const productName = "libopus-wasm";
-const productTagline = "Opus audio for the web platform";
+const productName = "libmlow-wasm";
+const productTagline = "Opus + MLow audio for the web platform";
 const productDescription =
-  "Small, modern WebAssembly bindings for libopus raw-packet encode and decode — Discord/WebRTC-ready 48 kHz stereo defaults, Int16 and Float32 PCM, in-band FEC, packet-loss concealment, and a drop-in @discordjs/opus adapter, in browsers and Node.";
-const installCommand = "npm install libopus-wasm";
+  "Fork of libopus-wasm with WebAssembly bindings for opus_mlow raw-packet encode and decode — Opus with SMPL/MLow support, Discord/WebRTC-ready 48 kHz stereo defaults, Int16 and Float32 PCM, in-band FEC, packet-loss concealment, and a drop-in @discordjs/opus adapter, in browsers and Node.";
+const installCommand = "npm install libmlow-wasm";
 
 const sections = [
   ["Start", ["index.md", "install.md", "quickstart.md"]],
@@ -420,7 +420,7 @@ function homeHero(page) {
     "Single-file WASM",
   ];
   return `<header class="home-hero">
-        <p class="eyebrow">WebAssembly · libopus 1.6.1</p>
+        <p class="eyebrow">WebAssembly · opus_mlow 1.0.0</p>
         <h1>${escapeHtml(productTagline)}</h1>
         <p class="lede">${escapeHtml(description)}</p>
         <div class="home-cta">

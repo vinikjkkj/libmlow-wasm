@@ -1,7 +1,7 @@
 # CTL reference
 
 libopus is configured through `opus_encoder_ctl` / `opus_decoder_ctl` — a
-varargs interface keyed by integer request codes. `libopus-wasm` exposes this as
+varargs interface keyed by integer request codes. `libmlow-wasm` exposes this as
 `encoderCtl(request, value)` and `decoderCtl(request, value)`, with the request
 codes published as the `EncoderCtl` and `DecoderCtl` enums.
 
@@ -11,7 +11,7 @@ a request that has no dedicated helper.
 ## How it works
 
 ```ts
-import { createEncoder, EncoderCtl } from "libopus-wasm";
+import { createEncoder, EncoderCtl } from "libmlow-wasm";
 
 const encoder = await createEncoder();
 encoder.encoderCtl(EncoderCtl.SetBitrate, 32000);
@@ -19,7 +19,7 @@ encoder.getBitrate(); // 32000
 ```
 
 ```ts
-import { createDecoder, DecoderCtl } from "libopus-wasm";
+import { createDecoder, DecoderCtl } from "libmlow-wasm";
 
 const decoder = await createDecoder();
 decoder.decoderCtl(DecoderCtl.SetGain, 256); // +3 dB, Q8 fixed-point
@@ -66,6 +66,16 @@ encoder.encoderCtl(4003, 0); // RangeError: not an allow-listed integer setter
 | `SetExpertFrameDuration` | `OPUS_SET_EXPERT_FRAME_DURATION` | — |
 | `SetPredictionDisabled` | `OPUS_SET_PREDICTION_DISABLED` | — |
 | `SetPhaseInversionDisabled` | `OPUS_SET_PHASE_INVERSION_DISABLED` | — |
+| `SetUseSmpl` | `OPUS_SET_USING_SMPL` | `useSmpl: true` on `createEncoder()` / `createDecoder()` |
+| `SetEncHpCutoff` | `OPUS_SET_ENC_HP_CUTOFF` | — |
+| `SetSecondaryComplexity` | `OPUS_SET_SECONDARY_COMPLEXITY` | — |
+| `SetSecondaryBitrate` | `OPUS_SET_SECONDARY_BITRATE` | — |
+| `SetMlowSubframeImp` | `OPUS_SET_MLOW_SUBFRAME_IMP` | — |
+| `SetMlowUseSpActFlat` | `OPUS_SET_MLOW_USE_SP_ACT_FLAT` | — |
+| `SetMlowVadNlUpdSpeed` | `OPUS_SET_MLOW_VAD_NL_UPD_SPEED` | — |
+| `SetMlowVadNonBinary` | `OPUS_SET_MLOW_VAD_NON_BINARY` | — |
+| `SetMlowVadHpSharpness` | `OPUS_SET_MLOW_VAD_HP_SHARPNESS` | — |
+| `SetMlowUseFecRateComp` | `OPUS_SET_MLOW_USE_FEC_RATE_COMP` | — |
 
 ```ts
 // Tell Opus the input only carries 16 meaningful bits.
@@ -83,6 +93,8 @@ encoder.encoderCtl(EncoderCtl.SetForceChannels, 2);
 | --- | --- | --- |
 | `SetGain` | `OPUS_SET_GAIN` | Output gain in Q8 dB (256 = +3 dB). |
 | `SetPhaseInversionDisabled` | `OPUS_SET_PHASE_INVERSION_DISABLED` | Disable stereo phase inversion. |
+| `SetUseLpcPostfilter` | `OPUS_SET_USE_LPC_POSTFILTER` | `useLpcPostfilter` on `createDecoder()` |
+| `SetUseSmpl` | `OPUS_SET_USING_SMPL` | `useSmpl: true` on `createDecoder()` |
 
 ```ts
 decoder.decoderCtl(DecoderCtl.SetGain, -256); // attenuate by 3 dB

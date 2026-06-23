@@ -1,17 +1,19 @@
 ---
 title: Overview
 permalink: /
-description: "Small, modern WebAssembly bindings for libopus raw-packet encode and decode — Discord/WebRTC-ready 48 kHz stereo defaults, Int16 and Float32 PCM, in-band FEC, packet-loss concealment, and a drop-in @discordjs/opus adapter, in browsers and Node."
+description: "Fork of libmlow-wasm with WebAssembly bindings for opus_mlow raw-packet encode and decode — Opus with SMPL/MLow support, Discord/WebRTC-ready 48 kHz stereo defaults, Int16 and Float32 PCM, in-band FEC, packet-loss concealment, and a drop-in @discordjs/opus adapter, in browsers and Node."
 ---
+
+> **Fork of [openclaw/libopus-wasm](https://github.com/openclaw/libopus-wasm).** Built against [**opus_mlow**](https://github.com/edgardmessias/opus_mlow) instead of upstream libopus 1.6.1.
 
 ## Try it
 
-`libopus-wasm` wraps [libopus](https://opus-codec.org/) 1.6.1 in a small,
+`libmlow-wasm` wraps [opus_mlow](https://github.com/edgardmessias/opus_mlow) in a small,
 single-file WebAssembly module. The default path is realtime voice: 48 kHz,
 stereo, 20 ms frames, raw Opus packets — no Ogg or WebM container in the way.
 
 ```ts
-import { createEncoder, createDecoder } from "libopus-wasm";
+import { createEncoder, createDecoder } from "libmlow-wasm";
 
 const encoder = await createEncoder(); // 48 kHz, stereo, 20 ms, audio
 const decoder = await createDecoder();
@@ -30,7 +32,8 @@ hook, no second `.wasm` request, and no native build step at install time.
 ## What it does
 
 - **Raw Opus packets.** Encode/decode single frames and batches. You own the
-  framing, so it drops straight into WebRTC, Discord, or a custom transport.
+  framing, so it drops straight into WebRTC, Discord, WhatsApp, or a custom transport.
+- **MLow-ready codec.** Built on opus_mlow with SMPL/MLow for low-bitrate WhatsApp-compatible audio.
 - **Browser and Node from one entry.** A single-file ES module with the WASM
   inlined. Bundles cleanly with Vite, webpack, esbuild, and friends.
 - **Int16 and Float32 PCM.** Use whichever your audio pipeline already speaks.
@@ -66,9 +69,9 @@ hook, no second `.wasm` request, and no native build step at install time.
 
 ## Project
 
-Wraps libopus 1.6.1 from Xiph.Org. Released under the
-[MIT license](https://github.com/openclaw/libopus-wasm/blob/main/LICENSE);
-libopus carries its own BSD license, reproduced in
-[THIRD_PARTY_NOTICES](https://github.com/openclaw/libopus-wasm/blob/main/THIRD_PARTY_NOTICES.md).
-Source and issues live on [GitHub](https://github.com/openclaw/libopus-wasm).
-Not affiliated with Xiph.Org or the Opus authors.
+Fork of [libopus-wasm](https://github.com/openclaw/libopus-wasm), linking
+[opus_mlow](https://github.com/edgardmessias/opus_mlow) v1.0.0. Released under the
+[MIT license](https://github.com/edgardmessias/libmlow-wasm/blob/main/LICENSE);
+opus_mlow carries the Opus BSD-style license, reproduced in
+[THIRD_PARTY_NOTICES](https://github.com/edgardmessias/libmlow-wasm/blob/main/THIRD_PARTY_NOTICES.md).
+Source and issues live on [GitHub](https://github.com/edgardmessias/libmlow-wasm).

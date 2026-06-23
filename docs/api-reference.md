@@ -1,6 +1,6 @@
 # API reference
 
-Everything exported from `libopus-wasm`. For the Discord-compatible adapter, see
+Everything exported from `libmlow-wasm`. For the Discord-compatible adapter, see
 [discord.js compatibility](discordjs.md).
 
 ```ts
@@ -18,7 +18,7 @@ import {
   OpusError,
   OpusErrorCode,
   isOpusError,
-} from "libopus-wasm";
+} from "libmlow-wasm";
 ```
 
 ## Top-level functions
@@ -239,5 +239,5 @@ import type {
   OpusPacketInfo,
   SampleRate,
   ChannelCount,
-} from "libopus-wasm";
+} from "libmlow-wasm";
 ```

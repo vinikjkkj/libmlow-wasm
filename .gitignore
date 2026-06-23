@@ -2,5 +2,5 @@ node_modules/
 dist/
 .cache/
 coverage/
-src/generated/libopus.generated.mjs
+src/generated/libmlow.generated.mjs
 *.tsbuildinfo
