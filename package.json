@@ -1,6 +1,6 @@
 {
   "name": "libmlow-wasm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fork of libopus-wasm with WebAssembly bindings for opus_mlow (Opus + SMPL/MLow) raw packet encode/decode.",
   "type": "module",
   "sideEffects": false,

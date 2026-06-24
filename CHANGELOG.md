@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.1 - 2026-06-24
+
 - Fix SMPL/MLow encode (`useSmpl: true`): export `opus_global_create()` / `opus_global_free()` from the WASM wrapper and add `opusGlobalCreate()` / `opusGlobalFree()`; auto-initialize global tables when creating encoders/decoders with `useSmpl` or enabling `SetUseSmpl` via CTL.
 - Add `STACK_SIZE=8388608` to the Emscripten link step for SMPL stack depth in WASM.
 - Re-enable and extend SMPL tests (round-trip, global reinit, explicit `opusGlobalCreate`).
