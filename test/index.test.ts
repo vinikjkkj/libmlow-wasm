@@ -16,6 +16,8 @@ import {
   getPacketInfo,
   isOpusError,
   loadLibopus,
+  opusGlobalCreate,
+  opusGlobalFree,
 } from "../src/index.js";
 
 describe("libmlow-wasm", () => {
@@ -23,7 +25,7 @@ describe("libmlow-wasm", () => {
     const info = await loadLibopus();
 
     expect(info.version).toContain("libopus");
-    expect(info.version).toMatch(/1\.0\.0/);
+    expect(info.version).toMatch(/1\.0\.1/);
   });
 
   it("uses Discord-ready defaults", async () => {
@@ -185,7 +187,7 @@ describe("libmlow-wasm", () => {
     }
   });
 
-  it.skip("encodes and decodes with SMPL/MLow enabled", async () => {
+  it("encodes and decodes with SMPL/MLow enabled", async () => {
     const encoder = await createEncoder({
       bitrate: 8_000,
       channels: 1,
@@ -197,12 +199,52 @@ describe("libmlow-wasm", () => {
       const pcm = makeSineFrame(encoder.frameSize, encoder.channels);
       const packet = encoder.encode(pcm);
       const decoded = decoder.decode(packet);
+      const info = await getMlowPacketInfo(packet);
 
+      expect(packet.byteLength).toBeGreaterThan(0);
+      expect(info.frames).toBe(1);
+      expect(info.samples).toBe(encoder.frameSize);
+      expect(decoded.length).toBe(encoder.frameSize * encoder.channels);
+    } finally {
+      encoder.free();
+      decoder.free();
+    }
+  });
+
+  it("reinitializes SMPL globals after opusGlobalFree", async () => {
+    await opusGlobalFree();
+    const encoder = await createEncoder({
+      channels: 1,
+      bitrate: 8_000,
+      sampleRate: 48_000,
+      useSmpl: true,
+    });
+    const decoder = await createDecoder({ channels: 1, sampleRate: 48_000, useSmpl: true });
+    try {
+      const packet = encoder.encode(makeSineFrame(encoder.frameSize, encoder.channels));
+      const decoded = decoder.decode(packet);
       expect(packet.byteLength).toBeGreaterThan(0);
       expect(decoded.length).toBe(encoder.frameSize * encoder.channels);
     } finally {
       encoder.free();
       decoder.free();
+    }
+  });
+
+  it("initializes SMPL globals explicitly with opusGlobalCreate", async () => {
+    await opusGlobalFree();
+    await opusGlobalCreate();
+    const encoder = await createEncoder({
+      channels: 1,
+      bitrate: 8_000,
+      sampleRate: 48_000,
+      useSmpl: true,
+    });
+    try {
+      const packet = encoder.encode(makeSineFrame(encoder.frameSize, encoder.channels));
+      expect(packet.byteLength).toBeGreaterThan(0);
+    } finally {
+      encoder.free();
     }
   });
 

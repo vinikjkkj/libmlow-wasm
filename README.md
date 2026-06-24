@@ -44,6 +44,86 @@ decoder.free();
 Both factories share one lazily-loaded WASM module; the first call pays the load
 cost and the rest are cheap.
 
+## WhatsApp / MLow voice
+
+For WhatsApp-style MLow (SMPL), use **16 kHz mono** and enable `useSmpl`. This
+matches common VoIP integrations and works with the pinned opus_mlow v1.0.0.
+SMPL at 24k/48k API rates needs a newer opus_mlow release (resampler fix upstream).
+
+Typical parameters:
+
+| Setting | Value | Notes |
+| --- | --- | --- |
+| `sampleRate` | `16_000` | Hz |
+| `channels` | `1` | mono |
+| `frameSize` | `960` | samples per encode frame (60 ms @ 16 kHz) |
+| `maxFrameSize` | `1_920` | decoder output capacity (120 ms @ 16 kHz) |
+| `useSmpl` | `true` | MLow/SMPL path |
+| `application` | `Application.Voip` (`2048`) | VoIP |
+| `signal` | `Signal.Voice` (`3001`) | voice-optimized |
+| `bitrate` | `6_000` | bits/s (tune per network) |
+| `complexity` | `5` | encoder CPU vs quality |
+| `dtx` | `true` | discontinuous transmission |
+| `fec` | `false` | in-band FEC (enable when expecting loss) |
+
+```ts
+import {
+  Application,
+  Signal,
+  createDecoder,
+  createEncoder,
+  loadLibopus,
+} from "libmlow-wasm";
+
+const SAMPLE_RATE = 16_000;
+const CHANNELS = 1;
+const FRAME_SIZE = 960;       // 60 ms @ 16 kHz
+const MAX_FRAME_SIZE = 1_920; // 120 ms decode buffer
+
+await loadLibopus();
+
+const encoder = await createEncoder({
+  channels: CHANNELS,
+  sampleRate: SAMPLE_RATE,
+  application: Application.Voip,
+  frameSize: FRAME_SIZE,
+  useSmpl: true,
+  dtx: true,
+  fec: false,
+  bitrate: 6_000,
+  complexity: 5,
+  signal: Signal.Voice,
+});
+
+const decoder = await createDecoder({
+  channels: CHANNELS,
+  sampleRate: SAMPLE_RATE,
+  useSmpl: true,
+  maxFrameSize: MAX_FRAME_SIZE,
+});
+
+// Encode: Float32 [-1, 1] → Int16 → MLow packet
+const float32 = new Float32Array(FRAME_SIZE);
+const pcm = new Int16Array(FRAME_SIZE);
+for (let i = 0; i < float32.length; i++) {
+  const sample = Math.max(-1, Math.min(1, float32[i]!));
+  pcm[i] = Math.round(sample * 32_767);
+}
+const packet = encoder.encode(pcm, { frameSize: FRAME_SIZE });
+
+// Decode: MLow packet → Float32 PCM
+const audio = decoder.decodeFloat(packet, { frameSize: FRAME_SIZE });
+
+// Packet loss: synthesize a concealment frame (PLC)
+const concealed = decoder.decodePacketLossFloat(FRAME_SIZE);
+
+encoder.free();
+decoder.free();
+```
+
+`createEncoder({ useSmpl: true })` initializes SMPL global tables automatically.
+For long-lived processes you can also call `opusGlobalCreate()` once up front.
+
 ## Relationship to upstream
 
 | | [libopus-wasm](https://github.com/openclaw/libopus-wasm) | **libmlow-wasm** (this repo) |
@@ -150,6 +230,8 @@ The API matches [libopus-wasm](https://libopus-wasm.dev/api-reference.html).
 | Function | Returns | Description |
 | --- | --- | --- |
 | `loadLibopus()` | `Promise<{ version }>` | Loads the module; returns the bundled opus_mlow version. |
+| `opusGlobalCreate()` | `Promise<void>` | Initialize SMPL global tables (optional; auto-called when `useSmpl: true`). |
+| `opusGlobalFree()` | `Promise<void>` | Release SMPL global tables. |
 | `createEncoder(options?)` | `Promise<OpusEncoderHandle>` | Create a raw-packet encoder. |
 | `createDecoder(options?)` | `Promise<OpusDecoderHandle>` | Create a raw-packet decoder. |
 | `getPacketInfo(packet, options?)` | `Promise<OpusPacketInfo>` | Validate a raw packet and return duration, frame count, channels, and bandwidth. |

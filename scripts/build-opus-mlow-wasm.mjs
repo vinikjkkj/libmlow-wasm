@@ -7,10 +7,10 @@ import { spawn } from "node:child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
-const opusRelease = "1.0.0";
+const opusRelease = "1.0.1";
 const opusTarball = `opus-mlow-${opusRelease}.tar.gz`;
 const opusUrl = `https://github.com/edgardmessias/opus_mlow/releases/download/v${opusRelease}/${opusTarball}`;
-const opusSha256 = "9be4364db341867db5974077dcead58639ea4541faa7e7547136695258d78cdb";
+const opusSha256 = "2b730f9ccbc13b02b9360e889079ef2ca831cbf181fa8cb2dae634f532f76ca0";
 const cacheDir = path.join(repoRoot, ".cache");
 const sourceDir = path.join(cacheDir, `opus-mlow-${opusRelease}`);
 const buildDir = path.join(cacheDir, `opus-mlow-${opusRelease}-build`);
@@ -34,6 +34,8 @@ const exportedFunctions = [
   "_oc_encoder_ctl_get_bitrate",
   "_oc_encoder_ctl_get_in_dtx",
   "_oc_encoder_ctl_get_lookahead",
+  "_oc_global_create",
+  "_oc_global_free",
   "_oc_get_version_string",
   "_oc_packet_get_bandwidth",
   "_oc_packet_get_nb_channels",
@@ -146,6 +148,8 @@ async function linkWrapper(libPath, includeDirs) {
       "ALLOW_MEMORY_GROWTH=1",
       "-s",
       "ASSERTIONS=0",
+      "-s",
+      "STACK_SIZE=8388608",
       "-s",
       "ENVIRONMENT=web,node",
       "-s",

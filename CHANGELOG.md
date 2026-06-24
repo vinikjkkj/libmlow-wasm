@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix SMPL/MLow encode (`useSmpl: true`): export `opus_global_create()` / `opus_global_free()` from the WASM wrapper and add `opusGlobalCreate()` / `opusGlobalFree()`; auto-initialize global tables when creating encoders/decoders with `useSmpl` or enabling `SetUseSmpl` via CTL.
+- Add `STACK_SIZE=8388608` to the Emscripten link step for SMPL stack depth in WASM.
+- Re-enable and extend SMPL tests (round-trip, global reinit, explicit `opusGlobalCreate`).
+- Document WhatsApp/MLow voice parameters (16 kHz mono, 60 ms frames, VoIP tuning) in README with a full encode/decode/PLC example.
+
 ## 0.1.0 - 2026-06-23
 
 - Remove `@discordjs/opus` dev dependency and native comparison benchmark; keep `libmlow-wasm/discordjs` API compatibility adapter.

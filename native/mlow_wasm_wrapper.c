@@ -244,6 +244,14 @@ void oc_mlow_packet_parse_toc(const unsigned char *data, int *toc_fields) {
   mlow_packet_parse_toc(data, toc_fields);
 }
 
+void oc_global_create(void) {
+  opus_global_create();
+}
+
+void oc_global_free(void) {
+  opus_global_free();
+}
+
 const char *oc_strerror(int code) {
   return opus_strerror(code);
 }

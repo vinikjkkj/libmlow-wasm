@@ -210,6 +210,35 @@ type NormalizedDecoderOptions = {
 };
 
 let modulePromise: Promise<LibmlowModule> | undefined;
+let smplGlobalsReady = false;
+
+export async function opusGlobalCreate(): Promise<void> {
+  const module = await getModule();
+  module._oc_global_create();
+  smplGlobalsReady = true;
+}
+
+export async function opusGlobalFree(): Promise<void> {
+  const module = await getModule();
+  module._oc_global_free();
+  smplGlobalsReady = false;
+}
+
+async function ensureSmplGlobals(): Promise<void> {
+  if (smplGlobalsReady) {
+    return;
+  }
+  const module = await getModule();
+  ensureSmplGlobalsSync(module);
+}
+
+function ensureSmplGlobalsSync(module: LibmlowModule): void {
+  if (smplGlobalsReady) {
+    return;
+  }
+  module._oc_global_create();
+  smplGlobalsReady = true;
+}
 
 export async function loadLibopus(): Promise<{
   version: string;
@@ -219,13 +248,21 @@ export async function loadLibopus(): Promise<{
 }
 
 export async function createEncoder(options: EncoderOptions = {}): Promise<OpusEncoderHandle> {
+  const normalized = normalizeEncoderOptions(options);
+  if (normalized.useSmpl) {
+    await ensureSmplGlobals();
+  }
   const module = await getModule();
-  return new WasmOpusEncoder(module, normalizeEncoderOptions(options));
+  return new WasmOpusEncoder(module, normalized);
 }
 
 export async function createDecoder(options: DecoderOptions = {}): Promise<OpusDecoderHandle> {
+  const normalized = normalizeDecoderOptions(options);
+  if (normalized.useSmpl) {
+    await ensureSmplGlobals();
+  }
   const module = await getModule();
-  return new WasmOpusDecoder(module, normalizeDecoderOptions(options));
+  return new WasmOpusDecoder(module, normalized);
 }
 
 export async function getPacketInfo(
@@ -459,6 +496,9 @@ class WasmOpusEncoder implements OpusEncoderHandle {
     validateInteger(value, "value");
     if (!ENCODER_INTEGER_CTL_REQUESTS.has(request)) {
       throw new RangeError("encoderCtl only supports integer setter requests");
+    }
+    if (request === EncoderCtl.SetUseSmpl && value !== 0) {
+      ensureSmplGlobalsSync(this.#module);
     }
     this.#check(this.#module._oc_encoder_ctl(this.#ptr, request, value), "encoderCtl");
   }
@@ -701,6 +741,9 @@ class WasmOpusDecoder implements OpusDecoderHandle {
     validateInteger(value, "value");
     if (!DECODER_INTEGER_CTL_REQUESTS.has(request)) {
       throw new RangeError("decoderCtl only supports integer setter requests");
+    }
+    if (request === DecoderCtl.SetUseSmpl && value !== 0) {
+      ensureSmplGlobalsSync(this.#module);
     }
     const code = this.#module._oc_decoder_ctl(this.#ptr, request, value);
     if (code < 0) {
