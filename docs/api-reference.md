@@ -23,6 +23,8 @@ import {
   OpusError,
   OpusErrorCode,
   isOpusError,
+  CompanionError,
+  CompanionErrorCode,
 } from "libmlow-wasm";
 ```
 
@@ -98,6 +100,7 @@ bytes. The frame must contain exactly `frameSize * channels` samples.
 | `channels` | `1 \| 2` | Channel count (read-only). |
 | `maxFrameSize` | `number` | Output capacity in samples/channel (read-only). |
 | `sampleRate` | `SampleRate` | Sample rate in Hz (read-only). |
+| `hasCompanion` | `boolean` | Whether an [MLow Companion](decoding.md#the-mlow-companion) is attached (read-only). |
 
 ### Methods
 
@@ -112,7 +115,9 @@ bytes. The frame must contain exactly `frameSize * channels` samples.
 | `decodePacketLoss(frameSize?)` | `Int16Array` | Synthesize one PLC frame (defaults to 20 ms). |
 | `decodePacketLossFloat(frameSize?)` | `Float32Array` | Float32 PLC variant. |
 | `decoderCtl(request, value)` | `void` | Integer-setter [CTL passthrough](ctl.md). |
-| `free()` | `void` | Release the underlying decoder. Idempotent. |
+| `setCompanionModel(model)` | `void` | Attach the [MLow Companion](decoding.md#the-mlow-companion) built from `model`, replacing any attached one; `null` detaches it. |
+| `resetCompanion()` | `void` | Clear the attached Companion's recurrent state and filter memories. |
+| `free()` | `void` | Release the underlying decoder and its Companion. Idempotent. |
 | `[Symbol.dispose]()` | `void` | Calls `free()`; enables `using` declarations. |
 
 `decode(null, { frameSize })` is equivalent to `decodePacketLoss(frameSize)`.
@@ -167,7 +172,8 @@ Passed to `createDecoder`. All fields are optional.
 | `channels` | `1 \| 2` | `2` | Must match the encoder. |
 | `maxFrameSize` | `number` | 120 ms | Output capacity in samples/channel. |
 | `useSmpl` | `boolean` | `false` | Decode the SMPL/MLow path. |
-| `useLpcPostfilter` | `boolean` | unset | Toggle the LPC postfilter. |
+| `useLpcPostfilter` | `boolean` | unset | The codec's classical LPC postfilter: `true` on at every rate, `false` off at every rate (what the WhatsApp client does). Unset keeps the codec default, off for wideband and on above it. |
+| `companionModel` | `Uint8Array` | unset | Attach the [MLow Companion](decoding.md#the-mlow-companion) built from these bytes. Requires `useSmpl: true`. |
 
 ### RepacketizerOptions
 
@@ -272,6 +278,12 @@ Integer request codes for the CTL passthrough. See the
 
 Use `OpusErrorCode` for named libopus error codes and `isOpusError(error)` for
 realm-safe checks.
+
+`CompanionError extends Error` is thrown when the MLow Companion rejects its
+model (`companionModel`, `setCompanionModel`). Its `code` is one of
+`CompanionErrorCode` -- `BadArg`, `AllocFail`, `BadModel`, `MissingTensor` --
+and `codeName` names it. These codes overlap libopus's numerically, which is
+why it is a separate class.
 
 Argument validation (wrong frame size, out-of-range option, empty packet,
 non-allow-listed CTL) throws a plain `RangeError` _before_ reaching WASM. Using a

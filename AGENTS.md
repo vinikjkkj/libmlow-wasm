@@ -46,73 +46,111 @@ Fork of [openclaw/libopus-wasm](https://github.com/openclaw/libopus-wasm). Build
 - Without global tables, SMPL encode returns `OPUS_INTERNAL_ERROR` (-3) because the codec maps `SMPL_ENC_NO_GLOBAL_DATA` (-112) internally.
 - Standard Opus (default `useSmpl: false`) is unaffected and works at all supported sample rates.
 
-## Companion: current state -- it matches the client
+## Companion: current state -- inside the decoder, matching the client end to end
 
-**Read this section first; most of what follows it is history.** The port now
-reproduces the client's NoLACE, verified stage by stage against values read out
-of the client's memory while it runs.
+**Read this section first; most of what follows it is history.** The Companion
+runs inside the pinned decoder, and on the same packets it reproduces the
+client's NoLACE (`ctl(4058, 6)` in the client) sample for sample:
 
-Against the client's NoLACE -- `ctl(4058, 6)`, the mode where its network runs
-every frame -- each measured on its own decode over steady-state frames:
-
-| | this build | the client |
+| | 15 kbps | 8 kbps (low rate) |
 | --- | --- | --- |
-| contribution, rms | **276.0** | **278.4** |
-| `peak^2/energy` of the effective filter | 0.8983 | 0.8926 |
-| DC gain | 1.083 | 1.119 |
-| residual of a 33-tap fit | 11.1% | 8.3% |
-| cost against `clean.s16` | -0.12 dB | -0.18 dB |
+| contribution, correlation with the client's | **0.99980** | **0.99982** |
+| contribution rms, this build / client | 282.4 / 281.1 | 428.2 / 426.4 |
+| filtered output against the client's | 35.7 dB | 34.7 dB |
+| dry output against the client's | 35.7 dB | 34.6 dB |
+| all 165 features against the client's | 1.00000 | 1.00000 |
 
-Before these fixes this build contributed rms 8964.8 and cost 17.5 dB.
-`native/companion_test.c` passes in full, scale equivariance included.
+The filtered outputs agree exactly as well as the dry ones: what is left is the
+two codecs' own disagreement plus the client's int8 quantisation. Details in
+`native/COMPANION-EVIDENCE.md`, "Inside the decoder".
 
-Verified against the client, each from the client's own inputs:
+### Using it
 
-| stage | how close |
-| --- | --- |
-| the 165 features | clean spectrum and cepstrum 1.000; autocorrelation to 1e-7 where it has the client's lag; whole vector 0.966 |
-| `conv1 -> conv2` | correlation 1.00000 |
-| `tconv`, block layout | 1.00000 |
-| the GRU, stepped per sub-frame over `tconv`'s slices | 1.00000 |
-| `ft1` and `ft2`, side by side over the GRU's states | 0.99999 and 1.00000 |
-| the conditioning the adaptive filters read | 0.9869 (median 0.9921) |
-| the adaptive gains, given the client's conditioning | 4.6e-4 over 96 gains |
-| `af1`, the adaptive convolution | 0.999998, 56.0 dB SNR |
-| the shaping | 0.999999, 54.5 dB SNR |
-| `af4` | 0.999999, 54.7 dB SNR |
+```ts
+const decoder = await createDecoder({
+  sampleRate: 16_000, channels: 1, useSmpl: true,
+  useLpcPostfilter: false,          // what the client does
+  companionModel: modelBytes,       // mlow_companion_v1, supplied by the caller
+});
+decoder.setCompanionModel(null);    // detach; or pass new bytes to replace
+decoder.resetCompanion();           // where the stream restarts
+```
 
-**Every stage is verified.** The residual error everywhere is the client's
-int8 quantisation of each dense layer's input, about 55 dB down.
+The weights are WhatsApp's and this library does not ship them. They are
+copied into the Companion, so the caller's bytes can be released. It acts on
+20 ms wideband mono MLow frames; everything else decodes as before.
 
-**Five faults were fixed to get here, and none was findable on the decibel
-oracle:**
+It sits where the client runs it: **on the excitation, before LPC synthesis**.
+`scripts/opus-mlow-patches.mjs` adds a per-frame hook to `smpl_core_decode`
+for it; with no hook registered the codec is unchanged, and
+`scripts/codec-vectors.mjs` confirms it bit for bit. The patched tree carries
+a stamp, and the build re-extracts a tree patched by an older version rather
+than stacking patches.
+
+**Cost, measured in the WebAssembly build** on 546 frames of real speech, 16
+kHz mono, median of seven interleaved trials:
+
+| | per 20 ms frame | share of one core |
+| --- | --- | --- |
+| decode, postfilter off | 14.6 us | 0.07% |
+| decode, LPC postfilter on | 22.1 us | 0.11% |
+| decode with the Companion | 885 us | 4.4% |
+
+Memory: **2.22 MiB per Companion** (2,331,348 bytes, counted natively and
+matching the heap in WebAssembly), against 50 KiB for the decoder -- the int8
+weights are expanded to float. Creating one also copies the model into the
+heap for the duration of the call, 754 KiB. The module grows by 25 KB.
+
+Most of the Companion's time is its dense layers. `-msimd128` on the final
+link halves it, 885 to 444 us, with output bit-identical (vectorising across a
+layer's outputs keeps each output's summation order) -- but the module would
+then require WebAssembly SIMD of every user, so it is not enabled. Feature
+extraction was 70% of the native cost until the clean spectrum stopped
+transforming its zero padding; that change is bit-identical too.
+
+### How it got here
+
+**Six faults were fixed, and none was findable on the decibel oracle:**
 
 1. The predictor polynomial subtracts: `A(z) = 1 - sum a_i z^-i`.
 2. The cepstrum and the pitch correlation read the decoder's **excitation**
-   (`fcb + adaptive + noise`), not the decoded speech. `CompanionFrameState`
-   carries it as `excitation[]`.
+   (`fcb + adaptive + noise`), not the decoded speech.
 3. `af1` and `af4` are conditioned on **`ft1`'s output**, not on the GRU's
    raw state.
 4. `ft1` and `ft2` run **side by side** over the GRU's states; `ft2` does not
    chain onto `ft1`.
 5. The shaping's **twenty-first envelope slot holds the envelope's mean**, as
    in the reference; this build had a zero there.
+6. **The filter runs on the excitation too**, not on the synthesised speech.
+   Filtering the speech matched the client's level and filter shape to within
+   a few percent and got the samples wrong -- contribution correlation 0.69.
+   A level-and-shape match is not a match.
+
+And four decoder-side mappings, each exact against the client once right: the
+ltp gains are the adaptive-codebook gains as dequantised, whatever the
+voicing; the bit count is `ec_tell` from the frame's own start; slot 92 is the
+TOC's low-rate flag; the pitch index rounds its half up.
 
 **How they were found, which is the part worth keeping.** Every one came from
 reading a value inside the client and comparing it with this build's, computed
 from the client's own inputs -- see "reading the client by ptrace" below. None
 came from a metric: the decibel oracle scores an inert filter like silence, and
-the first two faults had each been "ruled out" on it.
+the first two faults had each been "ruled out" on it. The sixth was found only
+by comparing the *input* of the first filter, after every output statistic
+already agreed.
 
-**A caller must supply** the decoder's excitation and **both** pitch lags for
-every sub-frame -- the client averages two distinct lags, and the codec's own
-feature dump keeps only one in two.
+Stage by stage, each from the client's own inputs: features 1.00000; `conv1 ->
+conv2`, `tconv`, the GRU, `ft1`/`ft2` all 0.99999 or better; the adaptive
+gains to 4.6e-4; `af1`, the shaping and `af4` at 54.5 to 56.0 dB SNR.
 
 **`ctl(4058, 1)` is not the Companion.** It is `OPUS_SET_USE_LPC_POSTFILTER`,
-the pinned codec's own classical postfilter, and this library can enable it
-with that one call. Every "client Companion" figure quoted below in mode 1 --
-identity plus seven percent, peak +0.8512, rms 301, +0.45 dB -- measured that
-postfilter, and the sections that chase them chased the wrong component.
+the pinned codec's own classical postfilter -- `useLpcPostfilter: true` here.
+It takes a mode, not a flag: 0 (the codec default) is off for wideband and on
+for super-wideband, 1 on for both, 2 wideband only, 3 off for both, so
+`useLpcPostfilter: false` sends 3. Every "client Companion" figure quoted below
+in mode 1 -- identity plus seven percent, peak +0.8512, rms 301, +0.45 dB --
+measured that postfilter, and the sections that chase them chased the wrong
+component.
 
 ## Companion: the client's costs 0.17 dB, this build's costs 17.5
 
@@ -299,8 +337,8 @@ cross-fade, which came from a description rather than a measurement.
 None of this is verifiable without a reference (input, output) pair produced by
 the client itself. Property checks (`native/companion_test.c`) pin what the
 maths must satisfy regardless, but they cannot tell a faithful port from a
-plausible one. Until such a pair exists the Companion stays unexported and
-unwired, so a wrong guess costs work, not correctness.
+plausible one. Such a pair now exists -- the client decoding the same packets
+-- and the Companion is wired in against it; see "current state".
 
 ## Companion: the int8 weights are SIMD-blocked, not row-major
 

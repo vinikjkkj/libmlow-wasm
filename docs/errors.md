@@ -50,6 +50,14 @@ try {
 `OpusError extends Error`, so `instanceof Error` matches it too. Use
 `isOpusError()` when errors may cross package or realm boundaries.
 
+## CompanionError: the Companion rejected its model
+
+Bytes passed as `companionModel` or to `setCompanionModel()` that are not a
+Companion container throw a `CompanionError`, with `code` from
+`CompanionErrorCode` (`BadModel`, `MissingTensor`, `AllocFail`, `BadArg`). The
+decoder is left as it was -- still usable, with no Companion attached, or with
+the one it already had.
+
 ## Empty vs. lost packets
 
 An **empty** `Uint8Array` is rejected with a `RangeError` — a zero-length buffer
