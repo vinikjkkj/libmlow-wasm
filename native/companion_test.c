@@ -272,11 +272,6 @@ int main(void) {
           }
           for (int frame = 0; frame < 40; frame++) {
             float pcm[COMPANION_FRAME];
-            for (int n = 0; n < COMPANION_FRAME; n++) {
-              const double t = (double)(frame * COMPANION_FRAME + n) / 16000.0;
-              pcm[n] = amplitude[pass]
-                * (float)(sin(2 * M_PI * 130 * t) + 0.4 * sin(2 * M_PI * 390 * t));
-            }
 
             CompanionFrameState state;
             memset(&state, 0, sizeof state);
@@ -300,16 +295,19 @@ int main(void) {
               state.gain[sub] = 60.0f;
             }
             state.num_bits = 190.0f;
-            /* The cepstrum and the pitch correlation read the decoder's
-               excitation, not `pcm`. Left at zero, every band would read
-               `ln(1e-9)` and `c0` would sit near -88 where the client's sits
-               near -10, which saturates the network and measures nothing.
+            /* The Companion reads and filters the decoder's excitation, not
+               the speech: the features take it from `state.excitation` and the
+               filters run on `pcm`, which the decoder hands over as the same
+               samples. Left at zero, every band would read `ln(1e-9)` and `c0`
+               would sit near -88 where the client's sits near -10, which
+               saturates the network and measures nothing.
 
-               So give it the excitation that is consistent with this signal:
-               the residual of `pcm` through its own predictor, which with
-               `A(z) = 1 - 1.4 z^-1 + 0.6 z^-2` is what `1 / A(z)` would have
-               to be driven by to produce it. The signal is analytic, so its
-               past samples are evaluated rather than carried between frames. */
+               So drive it with the excitation that is consistent with this
+               signal: the residual of the speech through its own predictor,
+               which with `A(z) = 1 - 1.4 z^-1 + 0.6 z^-2` is what `1 / A(z)`
+               would have to be driven by to produce it. The signal is
+               analytic, so its past samples are evaluated rather than carried
+               between frames. */
             for (int n = 0; n < COMPANION_FRAME; n++) {
               double x[3];
               for (int k = 0; k < 3; k++) {
@@ -320,6 +318,7 @@ int main(void) {
               state.excitation[n] =
                 (float)(x[0] - state.lpc[0][0] * x[1] - state.lpc[0][1] * x[2]);
             }
+            memcpy(pcm, state.excitation, sizeof pcm);
 
             /* Skip the first frames: the filter memories and the recurrent
                state start empty, so their output describes the reset. */

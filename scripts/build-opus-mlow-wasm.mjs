@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { applyCodecPatches, codecPatchState } from "./opus-mlow-patches.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -31,9 +32,21 @@ const useCmake = process.platform === "win32" || process.env.LIBMLOW_WASM_BUILD_
  */
 const OPUS_RELEASE_CFLAGS = "-O2";
 
+// The wrapper, and the MLow Companion it can attach to a decoder.
+const wrapperSources = [
+  "mlow_wasm_wrapper.c",
+  "companion.c",
+  "companion_decoder.c",
+  "companion_features.c",
+  "companion_net.c",
+];
+
 const exportedFunctions = [
   "_free",
   "_malloc",
+  "_oc_companion_create",
+  "_oc_companion_destroy",
+  "_oc_companion_reset",
   "_oc_create_decoder",
   "_oc_create_encoder",
   "_oc_decode",
@@ -44,6 +57,7 @@ const exportedFunctions = [
   "_oc_encode_float",
   "_oc_encode_secondary",
   "_oc_decoder_ctl",
+  "_oc_decoder_set_companion",
   "_oc_encoder_ctl",
   "_oc_encoder_ctl_get_bitrate",
   "_oc_encoder_ctl_get_in_dtx",
@@ -85,6 +99,7 @@ const exportedFunctions = [
 await fs.mkdir(cacheDir, { recursive: true });
 await fs.mkdir(generatedDir, { recursive: true });
 await ensureOpusSource();
+await applyCodecPatches(sourceDir);
 
 await fs.rm(buildDir, { recursive: true, force: true });
 await fs.mkdir(buildDir, { recursive: true });
@@ -96,12 +111,19 @@ console.log(`built ${path.relative(repoRoot, outputPath)} from opus_mlow ${opusR
 
 async function ensureOpusSource() {
   if (await exists(path.join(sourceDir, "configure"))) {
-    return;
+    // A tree patched by an older version of scripts/opus-mlow-patches.mjs is
+    // re-extracted rather than patched again on top.
+    if ((await codecPatchState(sourceDir)) !== "stale") {
+      return;
+    }
+    await fs.rm(sourceDir, { recursive: true, force: true });
   }
   const tarballPath = path.join(cacheDir, opusTarball);
   await downloadFile(opusUrl, tarballPath);
   await verifySha256(tarballPath, opusSha256);
-  await run("tar", ["-xzf", tarballPath, "-C", cacheDir], { cwd: repoRoot });
+  // Relative, from inside the cache: GNU tar reads a Windows drive letter
+  // (`G:\...`) as a remote host, and bsdtar takes the same arguments.
+  await run("tar", ["-xzf", opusTarball], { cwd: cacheDir });
 }
 
 async function buildWithAutotools() {
@@ -187,7 +209,9 @@ async function linkWrapper(libPath, includeDirs) {
       "-O3",
       "-flto",
       ...includeFlags,
-      path.join(repoRoot, "native", "mlow_wasm_wrapper.c"),
+      "-I",
+      path.join(repoRoot, "native"),
+      ...wrapperSources.map((file) => path.join(repoRoot, "native", file)),
       libPath,
       "-o",
       outputPath,

@@ -36,12 +36,14 @@
 /* Builds the analysis window, sin(pi * (n + 0.5) / size). */
 void companion_build_window(float *window, int size);
 
-/* Magnitude spectrum of `size` real samples, scaled by the transform size as
-   the reference does, written as size/2 + 1 bins. */
+/* Magnitude spectrum of `size` real samples, unnormalised, written as
+   size/2 + 1 bins. Only the first `used` samples are read; the rest are taken
+   as zero. */
 void companion_mag_spectrum(
   float *out,
   const float *input,
   int size,
+  int used,
   const float *cos_table,
   const float *sin_table
 );
