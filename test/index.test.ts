@@ -1,10 +1,13 @@
 import { Buffer } from "node:buffer";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { OpusEncoder as DiscordOpusEncoder } from "../src/discordjs.js";
 import {
   Application,
   Bandwidth,
   Bitrate,
+  CompanionError,
+  CompanionErrorCode,
   DecoderCtl,
   EncoderCtl,
   OpusError,
@@ -989,6 +992,154 @@ describe("libmlow-wasm", () => {
       encoder.free();
     }
   });
+
+  it("switches the LPC postfilter off at every rate when useLpcPostfilter is false", async () => {
+    // At 48 kHz MLow runs above wideband, where the codec's default leaves the
+    // postfilter on. `false` used to send that same default, so it changed
+    // nothing there; it has to send "off everywhere".
+    const encoder = await createEncoder({ bitrate: 24_000, channels: 1, frameSize: 960, sampleRate: 48_000, useSmpl: true });
+    const packets = makeVoicedFrames(960, 48_000, 20).map((frame) => encoder.encode(frame));
+    encoder.free();
+    const decodeWith = async (options: { useLpcPostfilter?: boolean }) => {
+      const decoder = await createDecoder({ channels: 1, sampleRate: 48_000, useSmpl: true, ...options });
+      try {
+        return concatInt16(packets.map((packet) => decoder.decode(packet)));
+      } finally {
+        decoder.free();
+      }
+    };
+    const unset = await decodeWith({});
+    expect(await decodeWith({ useLpcPostfilter: true })).toEqual(unset);
+    expect(await decodeWith({ useLpcPostfilter: false })).not.toEqual(unset);
+  });
+
+  it("validates a Companion model before touching wasm", async () => {
+    await expect(createDecoder({ channels: 1, companionModel: new Uint8Array(64) })).rejects.toThrow(
+      "companionModel requires useSmpl: true",
+    );
+    await expect(
+      createDecoder({ channels: 1, companionModel: new Uint8Array(0), useSmpl: true }),
+    ).rejects.toThrow(RangeError);
+    await expect(
+      createDecoder({ channels: 1, companionModel: [1, 2, 3] as unknown as Uint8Array, useSmpl: true }),
+    ).rejects.toThrow(TypeError);
+  });
+
+  it("rejects bytes that are not a Companion container and keeps decoding", async () => {
+    const decoder = await createDecoder({ channels: 1, sampleRate: MLOW_SAMPLE_RATE, useSmpl: true });
+    const encoder = await createEncoder(MLOW_VOICE_OPTIONS);
+    try {
+      let caught: unknown;
+      try {
+        decoder.setCompanionModel(new Uint8Array(256).fill(7));
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(CompanionError);
+      expect((caught as CompanionError).code).toBe(CompanionErrorCode.BadModel);
+      expect(decoder.hasCompanion).toBe(false);
+      expect(() => decoder.setCompanionModel(null)).not.toThrow();
+      const [frame] = makeVoicedFrames(MLOW_FRAME_SIZE, MLOW_SAMPLE_RATE, 1);
+      expect(decoder.decode(encoder.encode(frame!)).length).toBe(MLOW_FRAME_SIZE);
+    } finally {
+      encoder.free();
+      decoder.free();
+    }
+  });
+});
+
+/* The Companion's weights are WhatsApp's and are not in this repository. Point
+   LIBMLOW_COMPANION_MODEL at a copy of `mlow_companion_v1` to run these. */
+const COMPANION_MODEL_PATH = process.env.LIBMLOW_COMPANION_MODEL;
+
+describe.skipIf(!COMPANION_MODEL_PATH)("MLow Companion", () => {
+  const loadModel = () => new Uint8Array(readFileSync(COMPANION_MODEL_PATH!));
+
+  async function encodeVoice(channels: 1 | 2, frames = 40, bitrate = 15_000): Promise<Uint8Array[]> {
+    const encoder = await createEncoder({ ...MLOW_VOICE_OPTIONS, bitrate, channels });
+    try {
+      return makeVoicedFrames(MLOW_FRAME_SIZE, MLOW_SAMPLE_RATE, frames, channels).map((frame) =>
+        encoder.encode(frame),
+      );
+    } finally {
+      encoder.free();
+    }
+  }
+
+  async function decodeAll(
+    packets: readonly Uint8Array[],
+    options: { channels?: 1 | 2; companionModel?: Uint8Array },
+    prepare?: (decoder: Awaited<ReturnType<typeof createDecoder>>) => void,
+  ): Promise<Int16Array> {
+    const decoder = await createDecoder({
+      channels: options.channels ?? 1,
+      sampleRate: MLOW_SAMPLE_RATE,
+      useSmpl: true,
+      ...(options.companionModel ? { companionModel: options.companionModel } : {}),
+    });
+    try {
+      prepare?.(decoder);
+      return concatInt16(packets.map((packet) => decoder.decode(packet)));
+    } finally {
+      decoder.free();
+    }
+  }
+
+  it("filters wideband mono MLow without moving its level far", async () => {
+    const packets = await encodeVoice(1);
+    const dry = await decodeAll(packets, {});
+    const filtered = await decodeAll(packets, { companionModel: loadModel() });
+    expect(filtered).not.toEqual(dry);
+    // A post-filter corrects the signal; it does not replace it. Against the
+    // client this build's contribution sits 17 dB under the signal.
+    const ratio = rms(filtered) / rms(dry);
+    expect(ratio).toBeGreaterThan(0.5);
+    expect(ratio).toBeLessThan(2);
+  });
+
+  it("detaches back to the plain decode", async () => {
+    const packets = await encodeVoice(1);
+    const dry = await decodeAll(packets, {});
+    const detached = await decodeAll(packets, { companionModel: loadModel() }, (decoder) => {
+      expect(decoder.hasCompanion).toBe(true);
+      decoder.setCompanionModel(null);
+      expect(decoder.hasCompanion).toBe(false);
+    });
+    expect(detached).toEqual(dry);
+  });
+
+  it("copies the model, so the caller may release it", async () => {
+    const packets = await encodeVoice(1, 20);
+    const reference = await decodeAll(packets, { companionModel: loadModel() });
+    const model = loadModel();
+    const scribbled = await decodeAll(packets, {}, (decoder) => {
+      decoder.setCompanionModel(model);
+      model.fill(0);
+    });
+    expect(scribbled).toEqual(reference);
+  });
+
+  it("starts a replaced or reset Companion from a clean state", async () => {
+    const packets = await encodeVoice(1, 20);
+    const reference = await decodeAll(packets, { companionModel: loadModel() });
+    const replaced = await decodeAll(packets, { companionModel: loadModel() }, (decoder) => {
+      decoder.setCompanionModel(loadModel());
+      decoder.resetCompanion();
+    });
+    expect(replaced).toEqual(reference);
+  });
+
+  it("leaves stereo MLow alone", async () => {
+    // A stereo stream runs the core decoder once per channel, and one Companion
+    // carries one stream's state, so the decoder does not call it there. Below
+    // about 24 kbps the encoder sends stereo input as a mono stream, which the
+    // Companion does filter, so this needs the rate and checks it got stereo.
+    const packets = await encodeVoice(2, 20, 32_000);
+    expect((await getMlowPacketInfo(packets[10]!)).channels).toBe(2);
+    const dry = await decodeAll(packets, { channels: 2 });
+    const withModel = await decodeAll(packets, { channels: 2, companionModel: loadModel() });
+    expect(withModel).toEqual(dry);
+  });
 });
 
 const MLOW_SAMPLE_RATE = 16_000 as const;
@@ -1012,6 +1163,49 @@ function makeSineFrame(frameSize: number, channels: 1 | 2, cycles = 1): Int16Arr
     }
   }
   return pcm;
+}
+
+/* A harmonic series under a slow pitch glide and a syllable-rate envelope:
+   enough like voiced speech for MLow to code it as such. */
+function makeVoicedFrames(frameSize: number, sampleRate: number, frames: number, channels: 1 | 2 = 1): Int16Array[] {
+  const out: Int16Array[] = [];
+  let phase = 0;
+  for (let frame = 0; frame < frames; frame += 1) {
+    const pcm = new Int16Array(frameSize * channels);
+    for (let sample = 0; sample < frameSize; sample += 1) {
+      const t = (frame * frameSize + sample) / sampleRate;
+      phase += (2 * Math.PI * (130 + 25 * Math.sin(2 * Math.PI * 1.5 * t))) / sampleRate;
+      let value = 0;
+      for (let harmonic = 1; harmonic <= 20; harmonic += 1) {
+        value += Math.sin(harmonic * phase) / harmonic;
+      }
+      const envelope = 0.55 + 0.45 * Math.sin(2 * Math.PI * 4 * t);
+      const scaled = Math.round(value * envelope * 6000);
+      for (let channel = 0; channel < channels; channel += 1) {
+        pcm[sample * channels + channel] = channel === 0 ? scaled : Math.round(scaled * 0.6);
+      }
+    }
+    out.push(pcm);
+  }
+  return out;
+}
+
+function concatInt16(parts: readonly Int16Array[]): Int16Array {
+  const out = new Int16Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function rms(samples: Int16Array): number {
+  let energy = 0;
+  for (const sample of samples) {
+    energy += sample * sample;
+  }
+  return Math.sqrt(energy / samples.length);
 }
 
 function makeSineFloatFrame(frameSize: number, channels: 1 | 2): Float32Array {
