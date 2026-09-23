@@ -90,6 +90,33 @@ const floatPackets = encoder.encodeFloatFrames([f1, f2], { frameSize: 480 });
 These are convenience wrappers over `encode`/`encodeFloat`; each frame must
 still match the configured (or overridden) frame size.
 
+## Writing into your own buffer
+
+`encode` returns a fresh `Uint8Array` on every call. `encodeInto` performs the
+same encode but writes into a buffer you own and returns the byte count,
+allocating nothing:
+
+```ts
+const target = new Uint8Array(4000);
+
+const written = encoder.encodeInto(frame, target);
+const packet = target.subarray(0, written); // a view, not a copy
+```
+
+`encodeFloatInto` is the Float32 variant:
+
+```ts
+const written = encoder.encodeFloatInto(floatFrame, target);
+```
+
+Both take the same options as `encode` / `encodeFloat`. If `target` is too small
+for the packet they throw a `RangeError` naming both sizes, and write nothing.
+
+For most callers `encode` and `encodeFloat` are the right choice — a packet is
+small and one allocation per frame is not worth restructuring code over. The
+`Into` variants exist for the case where you run many concurrent streams and the
+per-frame garbage starts showing up in GC.
+
 ## Packet size limit
 
 By default the encoder allocates up to 4000 bytes for a packet, which is more

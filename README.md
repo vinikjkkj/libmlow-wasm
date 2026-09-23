@@ -46,9 +46,50 @@ cost and the rest are cheap.
 
 ## WhatsApp / MLow voice
 
+> **What this is verified against.** Two things, and neither is interoperation.
+>
+> Decoding is checked against reference vectors produced by a *separate* native
+> build of the same codec, driven with the configuration captured from a real
+> call: 8/8 bit-exact across four signals, single-frame and multiframe, including
+> DTX comfort-noise frames (`pnpm check-golden`). That rules out this library and
+> the reference disagreeing on the format.
+>
+> Encoding satisfies the acceptance checks read out of the client's decompiled
+> parser — the multiframe marker gate, the fixed-bit mask, the frame-count range.
+>
+> What is missing is a packet from a real call. **None has been compared
+> against**, because the payload is SRTP-encrypted on the wire and otherwise
+> stays inside the client's wasm module. Treat this as *conforms to the format*,
+> not *known to work against WhatsApp*, and test against your own endpoint before
+> depending on it.
+
 For WhatsApp-style MLow (SMPL), use **16 kHz mono** and enable `useSmpl`. This
-matches common VoIP integrations and works with the pinned opus_mlow v1.0.0.
+matches common VoIP integrations and works with the pinned opus_mlow v1.0.1.
 SMPL at 24k/48k API rates needs a newer opus_mlow release (resampler fix upstream).
+
+Reverse engineering of the client reports **`complexity: 5`** in production. The
+library defaults to `10`, which on the float build also runs a 480-point MDCT and
+an MLP for tonality analysis on every frame (anything at or above 7 does), while
+SMPL's own search tiers only step at 1/2/3/4/8. Pass `complexity: 5` explicitly
+to match the client; the default is left alone so existing callers keep their
+current output.
+
+WhatsApp emits **20 ms native SMPL frames grouped into one multiframe packet**.
+`opus_encode` does not do that grouping on the SMPL path, so the on-the-wire
+packet takes two steps: encode 20 ms frames, then pack them with
+[`createRepacketizer`](docs/repacketizer.md).
+
+How many frames land in one packet follows `M = (frame_duration_ms / 20) × fpp`.
+The `minfpp`/`maxfpp` settings in the client belong to a bundling layer above
+the codec, not to the codec itself, and RED travels in its own buffer without
+adding to `M`. Drive the count from your own packetisation; the repacketizer
+takes any number from 2 to 18.
+
+A 60 ms native frame (`frameSize: 960` at 16 kHz) is also a valid SMPL frame,
+but it is a **different bitstream** from a multiframe packet of 20 ms frames —
+one TOC covering 60 ms, versus a multiframe header in front of several 20 ms
+sub-frames. Pick 20 ms when the target is WhatsApp's framing. The 120 ms native
+duration exists in the TOC but has not been observed in production.
 
 Typical parameters:
 
@@ -56,13 +97,13 @@ Typical parameters:
 | --- | --- | --- |
 | `sampleRate` | `16_000` | Hz |
 | `channels` | `1` | mono |
-| `frameSize` | `960` | samples per encode frame (60 ms @ 16 kHz) |
+| `frameSize` | `320` | samples per encode frame (20 ms @ 16 kHz) — what WhatsApp emits |
 | `maxFrameSize` | `1_920` | decoder output capacity (120 ms @ 16 kHz) |
 | `useSmpl` | `true` | MLow/SMPL path |
 | `application` | `Application.Voip` (`2048`) | VoIP |
 | `signal` | `Signal.Voice` (`3001`) | voice-optimized |
-| `bitrate` | `6_000` | bits/s (tune per network) |
-| `complexity` | `5` | encoder CPU vs quality |
+| `bitrate` | `6_000` | bits/s — the floor; production is 6–24 kbps adaptive |
+| `complexity` | `5` | encoder CPU vs quality — the value the client uses |
 | `dtx` | `true` | discontinuous transmission |
 | `fec` | `false` | in-band FEC (enable when expecting loss) |
 
@@ -72,12 +113,14 @@ import {
   Signal,
   createDecoder,
   createEncoder,
+  createRepacketizer,
   loadLibopus,
 } from "libmlow-wasm";
 
 const SAMPLE_RATE = 16_000;
 const CHANNELS = 1;
-const FRAME_SIZE = 960;       // 60 ms @ 16 kHz
+const FRAME_SIZE = 320;       // 20 ms @ 16 kHz
+const FRAMES_PER_PACKET = 3;  // 60 ms on the wire; pick what your packetiser needs
 const MAX_FRAME_SIZE = 1_920; // 120 ms decode buffer
 
 await loadLibopus();
@@ -95,6 +138,8 @@ const encoder = await createEncoder({
   signal: Signal.Voice,
 });
 
+const repacketizer = await createRepacketizer();
+
 const decoder = await createDecoder({
   channels: CHANNELS,
   sampleRate: SAMPLE_RATE,
@@ -102,27 +147,37 @@ const decoder = await createDecoder({
   maxFrameSize: MAX_FRAME_SIZE,
 });
 
-// Encode: Float32 [-1, 1] → Int16 → MLow packet
-const float32 = new Float32Array(FRAME_SIZE);
-const pcm = new Int16Array(FRAME_SIZE);
-for (let i = 0; i < float32.length; i++) {
-  const sample = Math.max(-1, Math.min(1, float32[i]!));
-  pcm[i] = Math.round(sample * 32_767);
+// Encode: Float32 [-1, 1] -> Int16 -> three 20 ms MLow frames -> one packet
+const frames: Uint8Array[] = [];
+for (let frame = 0; frame < FRAMES_PER_PACKET; frame++) {
+  const float32 = new Float32Array(FRAME_SIZE); // one 20 ms slice of capture
+  const pcm = new Int16Array(FRAME_SIZE);
+  for (let i = 0; i < float32.length; i++) {
+    const sample = Math.max(-1, Math.min(1, float32[i]!));
+    pcm[i] = Math.round(sample * 32_767);
+  }
+  frames.push(encoder.encode(pcm));
 }
-const packet = encoder.encode(pcm, { frameSize: FRAME_SIZE });
+const packet = repacketizer.pack(frames); // multiframe: 3 x 20 ms
 
-// Decode: MLow packet → Float32 PCM
-const audio = decoder.decodeFloat(packet, { frameSize: FRAME_SIZE });
+// Decode: MLow packet -> Float32 PCM. The decoder's capacity has to cover the
+// whole packet, so a 60 ms multiframe needs maxFrameSize >= 960.
+const audio = decoder.decodeFloat(packet); // 960 samples = 60 ms
 
 // Packet loss: synthesize a concealment frame (PLC)
 const concealed = decoder.decodePacketLossFloat(FRAME_SIZE);
 
 encoder.free();
+repacketizer.free();
 decoder.free();
 ```
 
 `createEncoder({ useSmpl: true })` initializes SMPL global tables automatically.
 For long-lived processes you can also call `opusGlobalCreate()` once up front.
+
+For the packing step and the multiframe byte layout, see
+[Repacketizer](docs/repacketizer.md). For the redundancy WhatsApp adds on a bad
+network, see [RED (secondary encoder)](docs/packet-loss.md#red-secondary-encoder).
 
 ## Relationship to upstream
 
@@ -234,7 +289,9 @@ The API matches [libopus-wasm](https://libopus-wasm.dev/api-reference.html).
 | `opusGlobalFree()` | `Promise<void>` | Release SMPL global tables. |
 | `createEncoder(options?)` | `Promise<OpusEncoderHandle>` | Create a raw-packet encoder. |
 | `createDecoder(options?)` | `Promise<OpusDecoderHandle>` | Create a raw-packet decoder. |
-| `getPacketInfo(packet, options?)` | `Promise<OpusPacketInfo>` | Validate a raw packet and return duration, frame count, channels, and bandwidth. |
+| `createRepacketizer(options?)` | `Promise<MlowRepacketizerHandle>` | Create a repacketizer for MLow multiframe packets. See [Repacketizer](docs/repacketizer.md). |
+| `getPacketInfo(packet, options?)` | `Promise<OpusPacketInfo>` | Validate a raw packet by decoding it, and return duration, frame count, channels, and bandwidth. |
+| `getMlowPacketInfo(packet, options?)` | `Promise<MlowPacketInfo>` | Same fields for an MLow packet, plus the VAD/FEC flags and the decoded TOC. |
 
 ### Supported formats
 
@@ -261,7 +318,7 @@ pnpm build
 pnpm test
 ```
 
-`pnpm build` downloads [**opus_mlow 1.0.0**](https://github.com/edgardmessias/opus_mlow/releases/tag/v1.0.0),
+`pnpm build` downloads [**opus_mlow 1.0.1**](https://github.com/edgardmessias/opus_mlow/releases/tag/v1.0.1),
 verifies the pinned SHA-256, compiles it with Emscripten, and emits a single-file
 ES module under `dist/generated/`. See [Building from source](docs/building.md).
 

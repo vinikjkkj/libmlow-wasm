@@ -72,6 +72,41 @@ const floatFrames = decoder.decodeFloatFrames(packets); // Float32Array[]
 A `null` entry in the array is treated as a lost packet and concealed — see
 [Packet loss](packet-loss.md).
 
+## Decoding into your own buffer
+
+`decode` allocates a fresh `Int16Array` for every frame. At 48 kHz stereo a
+20 ms frame is 3,840 bytes of new typed array per decode — across many
+simultaneous streams that becomes real GC pressure. `decodeInto` runs the same
+decode into a buffer you own and returns the number of samples **per channel**:
+
+```ts
+const target = new Int16Array(decoder.maxFrameSize * decoder.channels);
+
+const samples = decoder.decodeInto(target, packet);
+const pcm = target.subarray(0, samples * decoder.channels); // a view, not a copy
+```
+
+Note the argument order: the target comes first, then the packet.
+`decodeFloatInto` is the Float32 variant:
+
+```ts
+const target = new Float32Array(decoder.maxFrameSize * decoder.channels);
+const samples = decoder.decodeFloatInto(target, packet);
+```
+
+Both accept the same options as `decode` / `decodeFloat`, including a `null`
+packet for concealment:
+
+```ts
+const samples = decoder.decodeInto(target, null, { frameSize: 960 });
+```
+
+A target that cannot hold `samples * channels` throws a `RangeError` naming both
+sizes, and nothing is written.
+
+`decode` and `decodeFloat` are fine for most use. Reach for the `Into` variants
+when you have many streams and care about allocation rate.
+
 ## Invalid packets
 
 A corrupt or truncated packet makes libopus return an error, surfaced as an

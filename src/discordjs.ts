@@ -47,7 +47,9 @@ export class OpusEncoder {
   encode(buf: Buffer | Uint8Array): Buffer {
     const encoder = this.#requireEncoder();
     const frameSize = inferFrameSize(buf.byteLength, this.channels);
-    return Buffer.from(encoder.encode(buf, { frameSize }));
+    const packet = encoder.encode(buf, { frameSize });
+    // encode() already returns a fresh copy, so wrap it instead of copying again.
+    return Buffer.from(packet.buffer, packet.byteOffset, packet.byteLength);
   }
 
   decode(buf: Buffer | Uint8Array): Buffer {

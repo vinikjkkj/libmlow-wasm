@@ -54,6 +54,17 @@ export const EncoderCtl = {
   SetMlowUseFecRateComp: 4070,
 } as const;
 
+/**
+ * Which coding mode a packet's TOC selects. The first byte decides: bits 7-6
+ * equal to `0b11` mean CELT, anything else means the native SMPL/MLow layout.
+ * This is the field that tells a WhatsApp-style MLow packet apart from a CELT
+ * fallback.
+ */
+export const MlowMode = {
+  Celt: 3,
+  Smpl: 4,
+} as const;
+
 export const DecoderCtl = {
   SetGain: 4034,
   SetPhaseInversionDisabled: 4046,
@@ -100,6 +111,15 @@ export type DecodeOptions = {
   maxFrameSize?: number;
 };
 
+export type RepacketizerOptions = {
+  maxPacketBytes?: number;
+  useMlow?: boolean;
+};
+
+export type PackOptions = {
+  maxPacketBytes?: number;
+};
+
 export type EncodeOptions = {
   frameSize?: number;
   maxPacketBytes?: number;
@@ -119,7 +139,14 @@ export type OpusPacketInfo = {
   readonly sampleRate: SampleRate;
 };
 
+export type MlowMode = (typeof MlowMode)[keyof typeof MlowMode];
+
 export type MlowPacketToc = {
+  /**
+   * Compare against {@link MlowMode}: `MlowMode.Smpl` for a native MLow packet,
+   * `MlowMode.Celt` otherwise. Stays `number` so the field keeps accepting any
+   * future mode the codec adds.
+   */
   readonly mode: number;
   readonly bandwidth: number;
   readonly samplesPerFrame: number;
@@ -141,6 +168,22 @@ export type OpusEncoderHandle = {
   encodeFloat(pcm: Float32Array, options?: EncodeOptions): Uint8Array;
   encodeFrames(frames: readonly (Int16Array | Uint8Array)[], options?: EncodeOptions): Uint8Array[];
   encodeFloatFrames(frames: readonly Float32Array[], options?: EncodeOptions): Uint8Array[];
+  /**
+   * Encodes the redundant (RED) copy of the frame just passed to {@link encode}.
+   * Call it right after `encode()` on the same frame. Requires `useSmpl` plus a
+   * secondary bitrate — see `setSecondaryBitrate`.
+   */
+  /**
+   * Encodes into a caller-owned buffer and returns the byte count, allocating
+   * nothing. Use it when per-frame garbage matters; `encode()` is the same work
+   * plus a fresh `Uint8Array` each call.
+   */
+  encodeInto(pcm: Int16Array | Uint8Array, target: Uint8Array, options?: EncodeOptions): number;
+  encodeFloatInto(pcm: Float32Array, target: Uint8Array, options?: EncodeOptions): number;
+  encodeSecondary(options?: EncodeOptions): Uint8Array;
+  setSecondaryBitrate(bitrate: number): void;
+  setSecondaryComplexity(complexity: number): void;
+  readonly useSmpl: boolean;
   encoderCtl(request: number, value: number): void;
   free(): void;
   getBitrate(): number;
@@ -158,14 +201,40 @@ export type OpusEncoderHandle = {
   [Symbol.dispose](): void;
 };
 
+export type MlowRepacketizerHandle = {
+  readonly useMlow: boolean;
+  /** Packs frames into one multiframe packet in a single WASM call. */
+  pack(frames: readonly Uint8Array[], options?: PackOptions): Uint8Array;
+  /** Clears the queued frames so the state can be reused. */
+  reset(): void;
+  /** Queues one frame for the next {@link out} call. */
+  add(frame: Uint8Array): void;
+  /** Number of frames queued so far. */
+  getFrameCount(): number;
+  /** Emits every queued frame as one packet. */
+  out(options?: PackOptions): Uint8Array;
+  /** Emits `[begin, end)` of the queued frames as one packet. */
+  outRange(begin: number, end: number, options?: PackOptions): Uint8Array;
+  free(): void;
+  [Symbol.dispose](): void;
+};
+
 export type OpusDecoderHandle = {
   readonly channels: ChannelCount;
   readonly maxFrameSize: number;
   readonly sampleRate: SampleRate;
   decode(packet: Uint8Array | null, options?: DecodeOptions): Int16Array;
   decodeFloat(packet: Uint8Array | null, options?: DecodeOptions): Float32Array;
+  /**
+   * Decodes into a caller-owned buffer and returns the sample count (per
+   * channel), allocating nothing. `decode()` is the same work plus a fresh
+   * `Int16Array` each call — at 48 kHz stereo that is 3,840 bytes per frame.
+   */
+  decodeInto(target: Int16Array, packet: Uint8Array | null, options?: DecodeOptions): number;
+  decodeFloatInto(target: Float32Array, packet: Uint8Array | null, options?: DecodeOptions): number;
   decodeFrames(packets: readonly (Uint8Array | null)[], options?: DecodeOptions): Int16Array[];
   decodeFloatFrames(packets: readonly (Uint8Array | null)[], options?: DecodeOptions): Float32Array[];
+  readonly useSmpl: boolean;
   decodePacketLoss(frameSize?: number): Int16Array;
   decodePacketLossFloat(frameSize?: number): Float32Array;
   decoderCtl(request: number, value: number): void;
@@ -178,12 +247,26 @@ const DEFAULT_FRAME_DURATION_MS = 20;
 const MAX_PACKET_DURATION_MS = 120;
 const DEFAULT_MAX_PACKET_BYTES = 4000;
 const DEFAULT_SAMPLE_RATE = 48_000 satisfies SampleRate;
+const BANDWIDTH_VALUES = new Set<number>(Object.values(Bandwidth));
+const SIGNAL_VALUES = new Set<number>(Object.values(Signal));
 const DECODER_INTEGER_CTL_REQUESTS = new Set<number>(Object.values(DecoderCtl));
 const ENCODER_INTEGER_CTL_REQUESTS = new Set<number>(Object.values(EncoderCtl));
 const ENCODE_FRAME_DURATIONS_MS = [2.5, 5, 10, 20, 40, 60] as const;
+/* MLow's own set, which is not a subset of Opus's: it has 120 ms and lacks 40.
+   The codec indexes it from two bits of the TOC and refuses anything else with
+   a bare internal error, so the two must be distinguished here or a caller
+   asking for 40 ms gets told nothing useful, and one asking for 120 ms — which
+   the codec encodes happily — is turned away for no reason. */
+const MLOW_FRAME_DURATIONS_MS = [10, 20, 60, 120] as const;
+/** `MAX_MLOW_FRAMES_PER_PACKET` in opus_smpl_repacketizer.h — 18 frames, up to 180 ms. */
+const MAX_MLOW_FRAMES_PER_PACKET = 18;
 const VALID_SAMPLE_RATES: readonly SampleRate[] = [8000, 12000, 16000, 24000, 48000];
 
 type LibmlowModule = Awaited<ReturnType<typeof createLibmlowModule>>;
+type NormalizedRepacketizerOptions = {
+  maxPacketBytes: number;
+  useMlow: boolean;
+};
 type NormalizedEncoderOptions = {
   application: Application;
   bitrate: number;
@@ -256,6 +339,23 @@ export async function createEncoder(options: EncoderOptions = {}): Promise<OpusE
   return new WasmOpusEncoder(module, normalized);
 }
 
+/**
+ * Creates a repacketizer that packs several MLow frames into one multiframe
+ * packet — the framing WhatsApp calls use (3×20 ms per packet is typical).
+ * `opus_encode` does not do this on the SMPL path, so packing is the only way
+ * to produce interoperable multiframe packets.
+ */
+export async function createRepacketizer(
+  options: RepacketizerOptions = {},
+): Promise<MlowRepacketizerHandle> {
+  const normalized = normalizeRepacketizerOptions(options);
+  if (normalized.useMlow) {
+    await ensureSmplGlobals();
+  }
+  const module = await getModule();
+  return new WasmMlowRepacketizer(module, normalized);
+}
+
 export async function createDecoder(options: DecoderOptions = {}): Promise<OpusDecoderHandle> {
   const normalized = normalizeDecoderOptions(options);
   if (normalized.useSmpl) {
@@ -275,42 +375,60 @@ export async function getPacketInfo(
     throw new RangeError("packet must not be empty");
   }
   const module = await getModule();
-  const packetPtr = checkedMalloc(module, packet.byteLength);
-  try {
-    module.HEAPU8.set(packet, packetPtr);
-    const decodedSamples = module._oc_packet_validate_decode(packetPtr, packet.byteLength, sampleRate);
-    if (decodedSamples < 0) {
-      throw createOpusError(module, decodedSamples, "getPacketInfo");
-    }
-    const frames = module._oc_packet_parse(packetPtr, packet.byteLength);
-    if (frames < 0) {
-      throw createOpusError(module, frames, "getPacketInfo");
-    }
-    const samples = module._oc_packet_get_nb_samples(packetPtr, packet.byteLength, sampleRate);
-    if (samples < 0) {
-      throw createOpusError(module, samples, "getPacketInfo");
-    }
-    const channels = module._oc_packet_get_nb_channels(packetPtr);
-    if (channels !== 1 && channels !== 2) {
-      throw new OpusError(channels, `libmlow getPacketInfo failed (${channels}): invalid channel count`);
-    }
-    const bandwidth = module._oc_packet_get_bandwidth(packetPtr);
-    if (bandwidth < 0) {
-      throw createOpusError(module, bandwidth, "getPacketInfo");
-    }
-    validateBandwidth(bandwidth as Bandwidth, "packet bandwidth");
-    return {
-      bandwidth: bandwidth as Bandwidth,
-      channels,
-      durationMs: (samples / sampleRate) * 1000,
-      frames,
-      samples,
-      samplesPerFrame: module._oc_packet_get_samples_per_frame(packetPtr, sampleRate),
-      sampleRate,
-    };
-  } finally {
-    module._free(packetPtr);
+  const scratch = packetScratch(module, packet);
+  const code = module._oc_packet_info(scratch.packetPtr, packet.byteLength, sampleRate, scratch.outPtr);
+  if (code < 0) {
+    throw createOpusError(module, code, "getPacketInfo");
   }
+  const out = scratch.outPtr >> 2;
+  const heap = module.HEAP32;
+  const channels = heap[out + 3];
+  if (channels !== 1 && channels !== 2) {
+    throw new OpusError(
+      channels ?? 0,
+      `libmlow getPacketInfo failed (${channels}): invalid channel count`,
+    );
+  }
+  const bandwidth = heap[out + 4] as Bandwidth;
+  validateBandwidth(bandwidth, "packet bandwidth");
+  const samples = heap[out + 1] as number;
+  return {
+    bandwidth,
+    channels,
+    durationMs: (samples / sampleRate) * 1000,
+    frames: heap[out] as number,
+    samples,
+    samplesPerFrame: heap[out + 2] as number,
+    sampleRate,
+  };
+}
+
+/**
+ * Module-scoped staging for packet inspection. These used to malloc/free per
+ * call; the buffers only grow, so a receiver inspecting every packet stops
+ * churning the allocator.
+ */
+const PACKET_INFO_FIELDS = 11;
+let infoPacketPtr = 0;
+let infoPacketBytes = 0;
+let infoOutPtr = 0;
+
+function packetScratch(
+  module: LibmlowModule,
+  packet: Uint8Array,
+): { packetPtr: number; outPtr: number } {
+  if (infoOutPtr === 0) {
+    infoOutPtr = checkedMalloc(module, PACKET_INFO_FIELDS * 4);
+  }
+  if (infoPacketPtr === 0 || infoPacketBytes < packet.byteLength) {
+    if (infoPacketPtr !== 0) {
+      module._free(infoPacketPtr);
+    }
+    infoPacketPtr = checkedMalloc(module, packet.byteLength);
+    infoPacketBytes = packet.byteLength;
+  }
+  module.HEAPU8.set(packet, infoPacketPtr);
+  return { packetPtr: infoPacketPtr, outPtr: infoOutPtr };
 }
 
 export async function getMlowPacketInfo(
@@ -323,50 +441,45 @@ export async function getMlowPacketInfo(
     throw new RangeError("packet must not be empty");
   }
   const module = await getModule();
-  const packetPtr = checkedMalloc(module, packet.byteLength);
-  const tocPtr = checkedMalloc(module, 4 * 4);
-  try {
-    module.HEAPU8.set(packet, packetPtr);
-    const frames = module._oc_mlow_packet_parse(packetPtr, packet.byteLength);
-    if (frames < 0) {
-      throw createOpusError(module, frames, "getMlowPacketInfo");
-    }
-    const samples = module._oc_mlow_packet_get_nb_samples(packetPtr, packet.byteLength, sampleRate);
-    if (samples < 0) {
-      throw createOpusError(module, samples, "getMlowPacketInfo");
-    }
-    const channels = module._oc_mlow_packet_get_nb_channels(packetPtr);
-    if (channels !== 1 && channels !== 2) {
-      throw new OpusError(channels, `libmlow getMlowPacketInfo failed (${channels}): invalid channel count`);
-    }
-    const bandwidth = module._oc_mlow_packet_get_bandwidth(packetPtr);
-    if (bandwidth < 0) {
-      throw createOpusError(module, bandwidth, "getMlowPacketInfo");
-    }
-    validateBandwidth(bandwidth as Bandwidth, "packet bandwidth");
-    module._oc_mlow_packet_parse_toc(packetPtr, tocPtr);
-    const tocIndex = tocPtr >> 2;
-    return {
-      bandwidth: bandwidth as Bandwidth,
-      channels,
-      durationMs: (samples / sampleRate) * 1000,
-      frames,
-      hasFecContent: module._oc_mlow_packet_has_fec_content(packetPtr) !== 0,
-      hasVadFlag: module._oc_mlow_packet_has_vad_flag(packetPtr) !== 0,
-      samples,
-      samplesPerFrame: module._oc_mlow_packet_get_samples_per_frame(packetPtr, sampleRate),
-      sampleRate,
-      toc: {
-        mode: module.HEAP32[tocIndex] ?? 0,
-        bandwidth: module.HEAP32[tocIndex + 1] ?? 0,
-        samplesPerFrame: module.HEAP32[tocIndex + 2] ?? 0,
-        stereo: module.HEAP32[tocIndex + 3] ?? 0,
-      },
-    };
-  } finally {
-    module._free(tocPtr);
-    module._free(packetPtr);
+  const scratch = packetScratch(module, packet);
+  const code = module._oc_mlow_packet_info(
+    scratch.packetPtr,
+    packet.byteLength,
+    sampleRate,
+    scratch.outPtr,
+  );
+  if (code < 0) {
+    throw createOpusError(module, code, "getMlowPacketInfo");
   }
+  const out = scratch.outPtr >> 2;
+  const heap = module.HEAP32;
+  const channels = heap[out + 3];
+  if (channels !== 1 && channels !== 2) {
+    throw new OpusError(
+      channels ?? 0,
+      `libmlow getMlowPacketInfo failed (${channels}): invalid channel count`,
+    );
+  }
+  const bandwidth = heap[out + 4] as Bandwidth;
+  validateBandwidth(bandwidth, "packet bandwidth");
+  const samples = heap[out + 1] as number;
+  return {
+    bandwidth,
+    channels,
+    durationMs: (samples / sampleRate) * 1000,
+    frames: heap[out] as number,
+    hasFecContent: heap[out + 6] !== 0,
+    hasVadFlag: heap[out + 5] !== 0,
+    samples,
+    samplesPerFrame: heap[out + 2] as number,
+    sampleRate,
+    toc: {
+      mode: heap[out + 7] ?? 0,
+      bandwidth: heap[out + 8] ?? 0,
+      samplesPerFrame: heap[out + 9] ?? 0,
+      stereo: heap[out + 10] ?? 0,
+    },
+  };
 }
 
 class WasmOpusEncoder implements OpusEncoderHandle {
@@ -374,6 +487,18 @@ class WasmOpusEncoder implements OpusEncoderHandle {
   readonly channels: ChannelCount;
   readonly frameSize: number;
   readonly sampleRate: SampleRate;
+  /* Which set of frame durations applies, among other things — MLow's are not
+     a subset of Opus's. The decoder already exposed this. */
+  readonly useSmpl: boolean;
+  #framesSinceSecondary = 0;
+  /* Redundancy and discontinuous transmission cannot both be on. The codec
+     asserts inside the secondary encoder when a silent frame fails to advance
+     its counter, and an assert here aborts the whole module rather than
+     returning an error — the instance is gone, not just the call. Reachable
+     from the public API with silence followed by speech, so it is refused
+     before it can happen. */
+  #dtxEnabled = false;
+  #secondaryEnabled = false;
   #freed = false;
   #module: LibmlowModule;
   #packetBytes = 0;
@@ -388,7 +513,8 @@ class WasmOpusEncoder implements OpusEncoderHandle {
     this.channels = options.channels;
     this.frameSize = options.frameSize;
     this.sampleRate = options.sampleRate;
-    const errorPtr = module._malloc(4);
+    this.useSmpl = options.useSmpl;
+    const errorPtr = checkedMalloc(module, 4);
     try {
       const ptr = module._oc_create_encoder(
         options.sampleRate,
@@ -404,43 +530,96 @@ class WasmOpusEncoder implements OpusEncoderHandle {
     } finally {
       module._free(errorPtr);
     }
-    this.setBitrate(options.bitrate);
-    this.setComplexity(options.complexity);
-    this.setDtx(options.dtx);
-    this.setFec(options.fec);
-    if (options.maxBandwidth !== undefined) {
-      this.setMaxBandwidth(options.maxBandwidth);
-    }
-    this.setPacketLossPercent(options.packetLossPercent);
-    this.setSignal(options.signal);
-    if (options.vbr !== undefined) {
-      this.setVbr(options.vbr);
-    }
-    if (options.vbrConstraint !== undefined) {
-      this.setVbrConstraint(options.vbrConstraint);
-    }
-    if (options.useSmpl) {
-      this.encoderCtl(EncoderCtl.SetLsbDepth, 16);
-      this.encoderCtl(EncoderCtl.SetUseSmpl, 1);
+    // From here the encoder owns WASM memory, so any failure below has to
+    // release it rather than leaking the state.
+    try {
+      this.setBitrate(options.bitrate);
+      this.setComplexity(options.complexity);
+      this.setDtx(options.dtx);
+      this.setFec(options.fec);
+      if (options.maxBandwidth !== undefined) {
+        this.setMaxBandwidth(options.maxBandwidth);
+      }
+      this.setPacketLossPercent(options.packetLossPercent);
+      this.setSignal(options.signal);
+      if (options.vbr !== undefined) {
+        this.setVbr(options.vbr);
+      }
+      if (options.vbrConstraint !== undefined) {
+        this.setVbrConstraint(options.vbrConstraint);
+      }
+      if (options.useSmpl) {
+        this.encoderCtl(EncoderCtl.SetLsbDepth, 16);
+        this.encoderCtl(EncoderCtl.SetUseSmpl, 1);
+      }
+      // Pre-size the scratch buffers so the hot path never calls malloc, which
+      // keeps memory growth out of encode() entirely.
+      this.#ensurePcmBytes(options.frameSize * options.channels * 4);
+      this.#ensurePacketBytes(DEFAULT_MAX_PACKET_BYTES);
+    } catch (error) {
+      this.#freeScratch();
+      module._oc_destroy_encoder(this.#ptr);
+      this.#freed = true;
+      throw error;
     }
   }
 
   encode(pcm: Int16Array | Uint8Array, options: EncodeOptions = {}): Uint8Array {
+    const encodedBytes = this.#encodeToScratch(pcm, options);
+    return this.#module.HEAPU8.slice(this.#packetPtr, this.#packetPtr + encodedBytes);
+  }
+
+  encodeInto(pcm: Int16Array | Uint8Array, target: Uint8Array, options: EncodeOptions = {}): number {
+    const encodedBytes = this.#encodeToScratch(pcm, options);
+    if (target.byteLength < encodedBytes) {
+      throw new RangeError(
+        `target holds ${target.byteLength} bytes; the packet needs ${encodedBytes}`,
+      );
+    }
+    target.set(this.#module.HEAPU8.subarray(this.#packetPtr, this.#packetPtr + encodedBytes));
+    return encodedBytes;
+  }
+
+  encodeFloat(pcm: Float32Array, options: EncodeOptions = {}): Uint8Array {
+    const encodedBytes = this.#encodeFloatToScratch(pcm, options);
+    return this.#module.HEAPU8.slice(this.#packetPtr, this.#packetPtr + encodedBytes);
+  }
+
+  encodeFloatInto(pcm: Float32Array, target: Uint8Array, options: EncodeOptions = {}): number {
+    const encodedBytes = this.#encodeFloatToScratch(pcm, options);
+    if (target.byteLength < encodedBytes) {
+      throw new RangeError(
+        `target holds ${target.byteLength} bytes; the packet needs ${encodedBytes}`,
+      );
+    }
+    target.set(this.#module.HEAPU8.subarray(this.#packetPtr, this.#packetPtr + encodedBytes));
+    return encodedBytes;
+  }
+
+  /** Encodes into the cached packet scratch and returns its byte count. */
+  #encodeToScratch(pcm: Int16Array | Uint8Array, options: EncodeOptions): number {
     this.#assertLive();
     const frameSize = options.frameSize ?? this.frameSize;
-    validateEncodeFrameSize(frameSize, this.sampleRate, "frameSize");
-    const pcmBytes = toUint8Array(pcm);
+    // The constructor already validated the default, so only re-check overrides.
+    if (frameSize !== this.frameSize) {
+      validateEncodeFrameSize(frameSize, this.sampleRate, "frameSize", this.useSmpl);
+    }
     const expectedBytes = frameSize * this.channels * 2;
-    if (pcmBytes.byteLength !== expectedBytes) {
+    if (pcm.byteLength !== expectedBytes) {
       throw new RangeError(
-        `PCM frame has ${pcmBytes.byteLength} bytes; expected ${expectedBytes} for ${frameSize} samples and ${this.channels} channel(s)`,
+        `PCM frame has ${pcm.byteLength} bytes; expected ${expectedBytes} for ${frameSize} samples and ${this.channels} channel(s)`,
       );
     }
     const maxPacketBytes = options.maxPacketBytes ?? DEFAULT_MAX_PACKET_BYTES;
     validatePositiveInteger(maxPacketBytes, "maxPacketBytes");
-    const pcmPtr = this.#ensurePcmBytes(pcmBytes.byteLength);
+    const pcmPtr = this.#ensurePcmBytes(expectedBytes);
     const packetPtr = this.#ensurePacketBytes(maxPacketBytes);
-    this.#module.HEAPU8.set(pcmBytes, pcmPtr);
+    // Copy through the widest matching view to skip building a throwaway one.
+    if (pcm instanceof Int16Array) {
+      this.#module.HEAP16.set(pcm, pcmPtr >> 1);
+    } else {
+      this.#module.HEAPU8.set(pcm, pcmPtr);
+    }
     const encodedBytes = this.#module._oc_encode(
       this.#ptr,
       pcmPtr,
@@ -451,13 +630,16 @@ class WasmOpusEncoder implements OpusEncoderHandle {
     if (encodedBytes < 0) {
       throw createOpusError(this.#module, encodedBytes, "encode");
     }
-    return this.#module.HEAPU8.slice(packetPtr, packetPtr + encodedBytes);
+    this.#framesSinceSecondary += 1;
+    return encodedBytes;
   }
 
-  encodeFloat(pcm: Float32Array, options: EncodeOptions = {}): Uint8Array {
+  #encodeFloatToScratch(pcm: Float32Array, options: EncodeOptions): number {
     this.#assertLive();
     const frameSize = options.frameSize ?? this.frameSize;
-    validateEncodeFrameSize(frameSize, this.sampleRate, "frameSize");
+    if (frameSize !== this.frameSize) {
+      validateEncodeFrameSize(frameSize, this.sampleRate, "frameSize");
+    }
     const expectedSamples = frameSize * this.channels;
     if (pcm.length !== expectedSamples) {
       throw new RangeError(
@@ -479,7 +661,8 @@ class WasmOpusEncoder implements OpusEncoderHandle {
     if (encodedBytes < 0) {
       throw createOpusError(this.#module, encodedBytes, "encodeFloat");
     }
-    return this.#module.HEAPU8.slice(packetPtr, packetPtr + encodedBytes);
+    this.#framesSinceSecondary += 1;
+    return encodedBytes;
   }
 
   encodeFrames(frames: readonly (Int16Array | Uint8Array)[], options: EncodeOptions = {}): Uint8Array[] {
@@ -488,6 +671,52 @@ class WasmOpusEncoder implements OpusEncoderHandle {
 
   encodeFloatFrames(frames: readonly Float32Array[], options: EncodeOptions = {}): Uint8Array[] {
     return frames.map((frame) => this.encodeFloat(frame, options));
+  }
+
+  encodeSecondary(options: EncodeOptions = {}): Uint8Array {
+    this.#assertLive();
+    // The codec tracks a frame counter per encoder and asserts that the primary
+    // one is strictly ahead. Calling twice in a row, or skipping frames, breaks
+    // that invariant — and the assert aborts the whole WASM module, taking every
+    // other encoder and decoder in the process with it. So guard it here and
+    // raise a normal JS error instead.
+    if (this.#framesSinceSecondary !== 1) {
+      const detail =
+        this.#framesSinceSecondary === 0
+          ? "no encode() call since the last one"
+          : `${this.#framesSinceSecondary} encode() calls since the last one`;
+      throw new Error(
+        `encodeSecondary() must follow exactly one encode() — ${detail}. ` +
+          "RED needs a secondary packet for every frame; it cannot be produced intermittently.",
+      );
+    }
+    const maxPacketBytes = options.maxPacketBytes ?? DEFAULT_MAX_PACKET_BYTES;
+    validatePositiveInteger(maxPacketBytes, "maxPacketBytes");
+    const packetPtr = this.#ensurePacketBytes(maxPacketBytes);
+    const encodedBytes = this.#module._oc_encode_secondary(this.#ptr, packetPtr, maxPacketBytes);
+    this.#framesSinceSecondary = 0;
+    if (encodedBytes < 0) {
+      throw createOpusError(this.#module, encodedBytes, "encodeSecondary");
+    }
+    return this.#module.HEAPU8.slice(packetPtr, packetPtr + encodedBytes);
+  }
+
+  setSecondaryBitrate(bitrate: number): void {
+    const resolved = normalizeBitrate(bitrate);
+    if (resolved > 0 && this.#dtxEnabled) {
+      throw new Error(
+        "redundancy cannot be enabled while discontinuous transmission is: the " +
+          "codec aborts when a silent frame reaches the secondary encoder. " +
+          "Disable it first with setDtx(false).",
+      );
+    }
+    this.encoderCtl(EncoderCtl.SetSecondaryBitrate, resolved);
+    this.#secondaryEnabled = resolved > 0;
+  }
+
+  setSecondaryComplexity(complexity: number): void {
+    validateIntegerRange(complexity, 0, 10, "complexity");
+    this.encoderCtl(EncoderCtl.SetSecondaryComplexity, complexity);
   }
 
   encoderCtl(request: number, value: number): void {
@@ -540,7 +769,15 @@ class WasmOpusEncoder implements OpusEncoderHandle {
   }
 
   setDtx(enabled: boolean): void {
+    if (enabled && this.#secondaryEnabled) {
+      throw new Error(
+        "discontinuous transmission cannot be enabled while redundancy is: the " +
+          "codec aborts when a silent frame reaches the secondary encoder. " +
+          "Disable redundancy first with setSecondaryBitrate(0).",
+      );
+    }
     this.encoderCtl(EncoderCtl.SetDtx, enabled ? 1 : 0);
+    this.#dtxEnabled = enabled;
   }
 
   setFec(enabled: boolean): void {
@@ -558,7 +795,7 @@ class WasmOpusEncoder implements OpusEncoderHandle {
   }
 
   setSignal(signal: Signal): void {
-    if (!Object.values(Signal).includes(signal)) {
+    if (!SIGNAL_VALUES.has(signal)) {
       throw new RangeError("signal must be Signal.Auto, Signal.Voice, or Signal.Music");
     }
     this.encoderCtl(EncoderCtl.SetSignal, signal);
@@ -641,6 +878,7 @@ class WasmOpusDecoder implements OpusDecoderHandle {
   readonly channels: ChannelCount;
   readonly maxFrameSize: number;
   readonly sampleRate: SampleRate;
+  readonly useSmpl: boolean;
   #freed = false;
   #module: LibmlowModule;
   #packetBytes = 0;
@@ -654,7 +892,8 @@ class WasmOpusDecoder implements OpusDecoderHandle {
     this.channels = options.channels;
     this.maxFrameSize = options.maxFrameSize;
     this.sampleRate = options.sampleRate;
-    const errorPtr = module._malloc(4);
+    this.useSmpl = options.useSmpl;
+    const errorPtr = checkedMalloc(module, 4);
     try {
       const ptr = module._oc_create_decoder(options.sampleRate, options.channels, errorPtr);
       const error = module.HEAP32[errorPtr >> 2] ?? 0;
@@ -665,23 +904,73 @@ class WasmOpusDecoder implements OpusDecoderHandle {
     } finally {
       module._free(errorPtr);
     }
-    if (options.useLpcPostfilter !== undefined) {
-      this.decoderCtl(DecoderCtl.SetUseLpcPostfilter, options.useLpcPostfilter ? 1 : 0);
-    }
-    if (options.useSmpl) {
-      this.decoderCtl(DecoderCtl.SetUseSmpl, 1);
+    // From here the decoder owns WASM memory, so any failure below has to
+    // release it rather than leaking the state.
+    try {
+      if (options.useLpcPostfilter !== undefined) {
+        this.decoderCtl(DecoderCtl.SetUseLpcPostfilter, options.useLpcPostfilter ? 1 : 0);
+      }
+      if (options.useSmpl) {
+        this.decoderCtl(DecoderCtl.SetUseSmpl, 1);
+      }
+      // Size for the float path up front so alternating decode/decodeFloat
+      // never reallocates, and the hot path never calls malloc.
+      this.#ensurePcmBytes(options.maxFrameSize * options.channels * 4);
+    } catch (error) {
+      this.#freeScratch();
+      module._oc_destroy_decoder(this.#ptr);
+      this.#freed = true;
+      throw error;
     }
   }
 
   decode(packet: Uint8Array | null, options: DecodeOptions = {}): Int16Array {
+    const samples = this.#decodeToScratch(packet, options);
+    const start = this.#pcmPtr >> 1;
+    return this.#module.HEAP16.slice(start, start + samples * this.channels);
+  }
+
+  decodeInto(target: Int16Array, packet: Uint8Array | null, options: DecodeOptions = {}): number {
+    const samples = this.#decodeToScratch(packet, options);
+    const sampleCount = samples * this.channels;
+    if (target.length < sampleCount) {
+      throw new RangeError(`target holds ${target.length} samples; the frame needs ${sampleCount}`);
+    }
+    const start = this.#pcmPtr >> 1;
+    target.set(this.#module.HEAP16.subarray(start, start + sampleCount));
+    return samples;
+  }
+
+  decodeFloat(packet: Uint8Array | null, options: DecodeOptions = {}): Float32Array {
+    const samples = this.#decodeFloatToScratch(packet, options);
+    const start = this.#pcmPtr >> 2;
+    return this.#module.HEAPF32.slice(start, start + samples * this.channels);
+  }
+
+  decodeFloatInto(
+    target: Float32Array,
+    packet: Uint8Array | null,
+    options: DecodeOptions = {},
+  ): number {
+    const samples = this.#decodeFloatToScratch(packet, options);
+    const sampleCount = samples * this.channels;
+    if (target.length < sampleCount) {
+      throw new RangeError(`target holds ${target.length} samples; the frame needs ${sampleCount}`);
+    }
+    const start = this.#pcmPtr >> 2;
+    target.set(this.#module.HEAPF32.subarray(start, start + sampleCount));
+    return samples;
+  }
+
+  /** Decodes into the cached PCM scratch and returns samples per channel. */
+  #decodeToScratch(packet: Uint8Array | null, options: DecodeOptions): number {
     this.#assertLive();
     const frameSize = this.#resolveDecodeFrameSize(packet, options);
-    const pcmBytes = frameSize * this.channels * 2;
-    const pcmPtr = this.#ensurePcmBytes(pcmBytes);
-    const { packetLength, packetPtr } = this.#copyPacket(packet, options.decodeFec);
+    const pcmPtr = this.#ensurePcmBytes(frameSize * this.channels * 2);
+    const packetLength = this.#copyPacket(packet, options.decodeFec);
     const decodedSamples = this.#module._oc_decode(
       this.#ptr,
-      packetPtr,
+      packet === null ? 0 : this.#packetPtr,
       packetLength,
       pcmPtr,
       frameSize,
@@ -690,19 +979,17 @@ class WasmOpusDecoder implements OpusDecoderHandle {
     if (decodedSamples < 0) {
       throw createOpusError(this.#module, decodedSamples, packet === null ? "decodePacketLoss" : "decode");
     }
-    const sampleCount = decodedSamples * this.channels;
-    return this.#module.HEAP16.slice(pcmPtr >> 1, (pcmPtr >> 1) + sampleCount);
+    return decodedSamples;
   }
 
-  decodeFloat(packet: Uint8Array | null, options: DecodeOptions = {}): Float32Array {
+  #decodeFloatToScratch(packet: Uint8Array | null, options: DecodeOptions): number {
     this.#assertLive();
     const frameSize = this.#resolveDecodeFrameSize(packet, options);
-    const pcmBytes = frameSize * this.channels * 4;
-    const pcmPtr = this.#ensurePcmBytes(pcmBytes);
-    const { packetLength, packetPtr } = this.#copyPacket(packet, options.decodeFec);
+    const pcmPtr = this.#ensurePcmBytes(frameSize * this.channels * 4);
+    const packetLength = this.#copyPacket(packet, options.decodeFec);
     const decodedSamples = this.#module._oc_decode_float(
       this.#ptr,
-      packetPtr,
+      packet === null ? 0 : this.#packetPtr,
       packetLength,
       pcmPtr,
       frameSize,
@@ -715,8 +1002,7 @@ class WasmOpusDecoder implements OpusDecoderHandle {
         packet === null ? "decodePacketLossFloat" : "decodeFloat",
       );
     }
-    const sampleCount = decodedSamples * this.channels;
-    return this.#module.HEAPF32.slice(pcmPtr >> 2, (pcmPtr >> 2) + sampleCount);
+    return decodedSamples;
   }
 
   decodeFrames(packets: readonly (Uint8Array | null)[], options: DecodeOptions = {}): Int16Array[] {
@@ -770,19 +1056,28 @@ class WasmOpusDecoder implements OpusDecoderHandle {
     }
   }
 
-  #copyPacket(packet: Uint8Array | null, decodeFec: boolean | undefined): { packetLength: number; packetPtr: number } {
+  /**
+   * Stages the packet in the cached scratch and returns its length. A null
+   * packet means PLC, which the codec signals with a null pointer — callers
+   * pass 0 rather than {@link #packetPtr} in that case. Returns a plain number
+   * so the decode path allocates nothing per frame.
+   */
+  #copyPacket(packet: Uint8Array | null, decodeFec: boolean | undefined): number {
     if (packet === null) {
       if (decodeFec) {
         throw new RangeError("decodeFec requires a packet");
       }
-      return { packetLength: 0, packetPtr: 0 };
+      return 0;
     }
     if (packet.byteLength === 0) {
       throw new RangeError("packet must not be empty; use null or decodePacketLoss() for PLC");
     }
     const packetPtr = this.#ensurePacketBytes(packet.byteLength);
     this.#module.HEAPU8.set(packet, packetPtr);
-    return { packetLength: packet.byteLength, packetPtr };
+    if (this.useSmpl) {
+      this.#module._oc_mlow_strip_padding_flag(packetPtr, packet.byteLength);
+    }
+    return packet.byteLength;
   }
 
   #ensurePacketBytes(requiredBytes: number): number {
@@ -885,6 +1180,252 @@ export function isOpusError(error: unknown): error is OpusError {
   );
 }
 
+class WasmMlowRepacketizer implements MlowRepacketizerHandle {
+  readonly useMlow: boolean;
+  #accumBytes = 0;
+  #accumOffset = 0;
+  #accumPtr = 0;
+  #defaultMaxPacketBytes: number;
+  #framesBytes = 0;
+  #framesPtr = 0;
+  #freed = false;
+  #lengthsBytes = 0;
+  #lengthsPtr = 0;
+  #module: LibmlowModule;
+  #packetBytes = 0;
+  #packetPtr = 0;
+  #ptr: number;
+
+  constructor(module: LibmlowModule, options: NormalizedRepacketizerOptions) {
+    this.#module = module;
+    this.useMlow = options.useMlow;
+    this.#defaultMaxPacketBytes = options.maxPacketBytes;
+    const ptr = module._oc_repacketizer_create();
+    if (!ptr) {
+      throw new Error("libmlow createRepacketizer failed: out of memory");
+    }
+    this.#ptr = ptr;
+    module._oc_repacketizer_set_using_mlow(ptr, options.useMlow ? 1 : 0);
+  }
+
+  pack(frames: readonly Uint8Array[], options: PackOptions = {}): Uint8Array {
+    this.#assertLive();
+    if (frames.length === 0) {
+      throw new RangeError("frames must not be empty");
+    }
+    if (frames.length > MAX_MLOW_FRAMES_PER_PACKET) {
+      throw new RangeError(
+        `frames must hold at most ${MAX_MLOW_FRAMES_PER_PACKET} frames; got ${frames.length}`,
+      );
+    }
+    let totalBytes = 0;
+    for (const frame of frames) {
+      if (frame.byteLength === 0) {
+        throw new RangeError("frames must not contain empty packets");
+      }
+      totalBytes += frame.byteLength;
+    }
+    const maxPacketBytes = options.maxPacketBytes ?? this.#defaultMaxPacketBytes;
+    validatePositiveInteger(maxPacketBytes, "maxPacketBytes");
+
+    const framesPtr = this.#ensureFramesBytes(totalBytes);
+    const lengthsPtr = this.#ensureLengthsBytes(frames.length * 4);
+    const packetPtr = this.#ensurePacketBytes(maxPacketBytes);
+    const heap = this.#module.HEAPU8;
+    const lengths = this.#module.HEAP32;
+    let offset = framesPtr;
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i] as Uint8Array;
+      heap.set(frame, offset);
+      lengths[(lengthsPtr >> 2) + i] = frame.byteLength;
+      offset += frame.byteLength;
+    }
+
+    const packedBytes = this.#module._oc_mlow_repacketize(
+      this.#ptr,
+      framesPtr,
+      lengthsPtr,
+      frames.length,
+      this.useMlow ? 1 : 0,
+      packetPtr,
+      maxPacketBytes,
+    );
+    if (packedBytes < 0) {
+      throw createOpusError(this.#module, packedBytes, "pack");
+    }
+    // oc_mlow_repacketize re-inits the state, so anything queued via add() is gone.
+    this.#accumOffset = 0;
+    return this.#module.HEAPU8.slice(packetPtr, packetPtr + packedBytes);
+  }
+
+  reset(): void {
+    this.#assertLive();
+    this.#module._oc_repacketizer_init(this.#ptr);
+    this.#module._oc_repacketizer_set_using_mlow(this.#ptr, this.useMlow ? 1 : 0);
+    this.#accumOffset = 0;
+  }
+
+  add(frame: Uint8Array): void {
+    this.#assertLive();
+    if (frame.byteLength === 0) {
+      throw new RangeError("frame must not be empty");
+    }
+    // opus_repacketizer_cat() stores pointers INTO this buffer rather than
+    // copying, so every queued frame must keep its own bytes alive and put
+    // until out(). Hence a fixed accumulator that never moves between
+    // reset() and out() — appending, never overwriting.
+    const accumPtr = this.#ensureAccumulator();
+    if (this.#accumOffset + frame.byteLength > this.#accumBytes) {
+      throw new RangeError(
+        `queued frames exceed the ${this.#accumBytes}-byte accumulator; call out() or raise maxPacketBytes`,
+      );
+    }
+    const framePtr = accumPtr + this.#accumOffset;
+    this.#module.HEAPU8.set(frame, framePtr);
+    const code = this.#module._oc_repacketizer_cat(this.#ptr, framePtr, frame.byteLength);
+    if (code < 0) {
+      throw createOpusError(this.#module, code, "add");
+    }
+    this.#accumOffset += frame.byteLength;
+  }
+
+  getFrameCount(): number {
+    this.#assertLive();
+    return this.#module._oc_repacketizer_get_nb_frames(this.#ptr);
+  }
+
+  out(options: PackOptions = {}): Uint8Array {
+    this.#assertLive();
+    const maxPacketBytes = options.maxPacketBytes ?? this.#defaultMaxPacketBytes;
+    validatePositiveInteger(maxPacketBytes, "maxPacketBytes");
+    const packetPtr = this.#ensurePacketBytes(maxPacketBytes);
+    const packedBytes = this.#module._oc_repacketizer_out(this.#ptr, packetPtr, maxPacketBytes);
+    if (packedBytes < 0) {
+      throw createOpusError(this.#module, packedBytes, "out");
+    }
+    return this.#module.HEAPU8.slice(packetPtr, packetPtr + packedBytes);
+  }
+
+  outRange(begin: number, end: number, options: PackOptions = {}): Uint8Array {
+    this.#assertLive();
+    validateInteger(begin, "begin");
+    validateInteger(end, "end");
+    if (begin < 0 || end < begin) {
+      throw new RangeError("end must be greater than or equal to begin, and begin must not be negative");
+    }
+    const maxPacketBytes = options.maxPacketBytes ?? this.#defaultMaxPacketBytes;
+    validatePositiveInteger(maxPacketBytes, "maxPacketBytes");
+    const packetPtr = this.#ensurePacketBytes(maxPacketBytes);
+    const packedBytes = this.#module._oc_repacketizer_out_range(
+      this.#ptr,
+      begin,
+      end,
+      packetPtr,
+      maxPacketBytes,
+    );
+    if (packedBytes < 0) {
+      throw createOpusError(this.#module, packedBytes, "outRange");
+    }
+    return this.#module.HEAPU8.slice(packetPtr, packetPtr + packedBytes);
+  }
+
+  free(): void {
+    if (this.#freed) {
+      return;
+    }
+    this.#freeScratch();
+    this.#module._oc_repacketizer_destroy(this.#ptr);
+    this.#freed = true;
+  }
+
+  [Symbol.dispose](): void {
+    this.free();
+  }
+
+  #assertLive(): void {
+    if (this.#freed) {
+      throw new Error("MlowRepacketizer has been freed");
+    }
+  }
+
+  #ensureFramesBytes(requiredBytes: number): number {
+    if (this.#framesPtr !== 0 && this.#framesBytes >= requiredBytes) {
+      return this.#framesPtr;
+    }
+    const nextPtr = checkedMalloc(this.#module, requiredBytes);
+    if (this.#framesPtr !== 0) {
+      this.#module._free(this.#framesPtr);
+    }
+    this.#framesPtr = nextPtr;
+    this.#framesBytes = requiredBytes;
+    return this.#framesPtr;
+  }
+
+  /**
+   * Fixed-size staging area for {@link add}. Allocated once and never moved,
+   * because the repacketizer holds raw pointers into it until out().
+   */
+  #ensureAccumulator(): number {
+    if (this.#accumPtr !== 0) {
+      return this.#accumPtr;
+    }
+    const bytes = MAX_MLOW_FRAMES_PER_PACKET * this.#defaultMaxPacketBytes;
+    this.#accumPtr = checkedMalloc(this.#module, bytes);
+    this.#accumBytes = bytes;
+    return this.#accumPtr;
+  }
+
+  #ensureLengthsBytes(requiredBytes: number): number {
+    if (this.#lengthsPtr !== 0 && this.#lengthsBytes >= requiredBytes) {
+      return this.#lengthsPtr;
+    }
+    const nextPtr = checkedMalloc(this.#module, requiredBytes);
+    if (this.#lengthsPtr !== 0) {
+      this.#module._free(this.#lengthsPtr);
+    }
+    this.#lengthsPtr = nextPtr;
+    this.#lengthsBytes = requiredBytes;
+    return this.#lengthsPtr;
+  }
+
+  #ensurePacketBytes(requiredBytes: number): number {
+    if (this.#packetPtr !== 0 && this.#packetBytes >= requiredBytes) {
+      return this.#packetPtr;
+    }
+    const nextPtr = checkedMalloc(this.#module, requiredBytes);
+    if (this.#packetPtr !== 0) {
+      this.#module._free(this.#packetPtr);
+    }
+    this.#packetPtr = nextPtr;
+    this.#packetBytes = requiredBytes;
+    return this.#packetPtr;
+  }
+
+  #freeScratch(): void {
+    if (this.#accumPtr !== 0) {
+      this.#module._free(this.#accumPtr);
+    }
+    if (this.#framesPtr !== 0) {
+      this.#module._free(this.#framesPtr);
+    }
+    if (this.#lengthsPtr !== 0) {
+      this.#module._free(this.#lengthsPtr);
+    }
+    if (this.#packetPtr !== 0) {
+      this.#module._free(this.#packetPtr);
+    }
+    this.#accumPtr = 0;
+    this.#accumBytes = 0;
+    this.#accumOffset = 0;
+    this.#framesPtr = 0;
+    this.#framesBytes = 0;
+    this.#lengthsPtr = 0;
+    this.#lengthsBytes = 0;
+    this.#packetPtr = 0;
+    this.#packetBytes = 0;
+  }
+}
+
 async function getModule(): Promise<LibmlowModule> {
   modulePromise ??= createLibmlowModule();
   return await modulePromise;
@@ -904,18 +1445,12 @@ function createOpusError(module: LibmlowModule, code: number, operation: string)
   return new OpusError(code, `libmlow ${operation} failed (${code}): ${message}`, operation);
 }
 
-function toUint8Array(input: Int16Array | Uint8Array): Uint8Array {
-  return input instanceof Uint8Array
-    ? input
-    : new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-}
-
 function normalizeEncoderOptions(options: EncoderOptions): NormalizedEncoderOptions {
   const sampleRate = options.sampleRate ?? DEFAULT_SAMPLE_RATE;
   const channels = options.channels ?? DEFAULT_CHANNELS;
   validateCodecOptions({ channels, sampleRate });
   const frameSize = options.frameSize ?? samplesForDuration(sampleRate, DEFAULT_FRAME_DURATION_MS);
-  validateEncodeFrameSize(frameSize, sampleRate, "frameSize");
+  validateEncodeFrameSize(frameSize, sampleRate, "frameSize", options.useSmpl === true);
   if (options.maxBandwidth !== undefined) {
     validateBandwidth(options.maxBandwidth, "maxBandwidth");
   }
@@ -923,6 +1458,10 @@ function normalizeEncoderOptions(options: EncoderOptions): NormalizedEncoderOpti
     application: options.application ?? Application.Audio,
     bitrate: normalizeBitrate(options.bitrate ?? 64_000),
     channels,
+    // Worth knowing when tuning: at 7 and above the encoder runs a 480-point
+    // MDCT plus an MLP for tonality analysis on every frame, while SMPL's own
+    // search tiers only step at 1/2/3/4/8. So 6 buys the same SMPL search as 8
+    // while skipping that analysis entirely.
     complexity: options.complexity ?? 10,
     dtx: options.dtx ?? false,
     fec: options.fec ?? false,
@@ -935,6 +1474,12 @@ function normalizeEncoderOptions(options: EncoderOptions): NormalizedEncoderOpti
     vbr: options.vbr,
     vbrConstraint: options.vbrConstraint,
   };
+}
+
+function normalizeRepacketizerOptions(options: RepacketizerOptions): NormalizedRepacketizerOptions {
+  const maxPacketBytes = options.maxPacketBytes ?? DEFAULT_MAX_PACKET_BYTES;
+  validatePositiveInteger(maxPacketBytes, "maxPacketBytes");
+  return { maxPacketBytes, useMlow: options.useMlow !== false };
 }
 
 function normalizeDecoderOptions(options: DecoderOptions): NormalizedDecoderOptions {
@@ -974,15 +1519,25 @@ function normalizeBitrate(bitrate: Bitrate): number {
 }
 
 function validateBandwidth(bandwidth: Bandwidth, name: string): void {
-  if (!Object.values(Bandwidth).includes(bandwidth)) {
+  if (!BANDWIDTH_VALUES.has(bandwidth)) {
     throw new RangeError(
       `${name} must be Bandwidth.Narrowband, Bandwidth.Mediumband, Bandwidth.Wideband, Bandwidth.Superwideband, or Bandwidth.Fullband`,
     );
   }
 }
 
-function validateEncodeFrameSize(frameSize: number, sampleRate: SampleRate, name: string): void {
-  validateFrameSizeForDurations(frameSize, sampleRate, name, ENCODE_FRAME_DURATIONS_MS);
+function validateEncodeFrameSize(
+  frameSize: number,
+  sampleRate: SampleRate,
+  name: string,
+  useSmpl = false,
+): void {
+  validateFrameSizeForDurations(
+    frameSize,
+    sampleRate,
+    name,
+    useSmpl ? MLOW_FRAME_DURATIONS_MS : ENCODE_FRAME_DURATIONS_MS,
+  );
 }
 
 function validateDecodeCapacity(frameSize: number, sampleRate: SampleRate, name: string): void {
@@ -1013,10 +1568,32 @@ function validateFrameSizeForDurations(
   name: string,
   durationsMs: readonly number[],
 ): void {
-  const validFrameSizes = durationsMs.map((durationMs) => samplesForDuration(sampleRate, durationMs));
-  if (!Number.isInteger(frameSize) || !validFrameSizes.includes(frameSize)) {
-    throw new RangeError(`${name} must be one of ${validFrameSizes.join(", ")} samples at ${sampleRate} Hz`);
+  const validFrameSizes = frameSizesFor(sampleRate, durationsMs);
+  if (!Number.isInteger(frameSize) || !validFrameSizes.has(frameSize)) {
+    throw new RangeError(
+      `${name} must be one of ${[...validFrameSizes].join(", ")} samples at ${sampleRate} Hz`,
+    );
   }
+}
+
+/**
+ * Valid frame sizes per (sample rate, duration set). Cached because `encode()`
+ * validates on every call, and rebuilding the list per frame allocates.
+ */
+const frameSizeCache = new Map<readonly number[], Map<SampleRate, ReadonlySet<number>>>();
+
+function frameSizesFor(sampleRate: SampleRate, durationsMs: readonly number[]): ReadonlySet<number> {
+  let perRate = frameSizeCache.get(durationsMs);
+  if (perRate === undefined) {
+    perRate = new Map();
+    frameSizeCache.set(durationsMs, perRate);
+  }
+  let sizes = perRate.get(sampleRate);
+  if (sizes === undefined) {
+    sizes = new Set(durationsMs.map((durationMs) => samplesForDuration(sampleRate, durationMs)));
+    perRate.set(sampleRate, sizes);
+  }
+  return sizes;
 }
 
 function validateInteger(value: number, name: string): void {

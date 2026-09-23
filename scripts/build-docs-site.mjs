@@ -20,7 +20,10 @@ const installCommand = "npm install libmlow-wasm";
 
 const sections = [
   ["Start", ["index.md", "install.md", "quickstart.md"]],
-  ["Encode & decode", ["encoding.md", "decoding.md", "packet-loss.md", "packet-info.md"]],
+  [
+    "Encode & decode",
+    ["encoding.md", "decoding.md", "repacketizer.md", "packet-loss.md", "packet-info.md"],
+  ],
   ["Tuning", ["encoder-tuning.md", "ctl.md"]],
   ["Integrations", ["discordjs.md", "browser.md"]],
   ["Reference", ["api-reference.md", "errors.md", "building.md", "benchmark.md"]],
