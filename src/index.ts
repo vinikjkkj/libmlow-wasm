@@ -72,6 +72,13 @@ export const DecoderCtl = {
   SetUseSmpl: 4050,
 } as const;
 
+/* `OPUS_SET_USE_LPC_POSTFILTER` takes a mode, not a flag: 0 is wideband off and
+   super-wideband on (the codec default), 1 both on, 2 wideband only, 3 both
+   off. So `false` has to send 3: sending 0 left the super-wideband
+   postfilter running. */
+const LPC_POSTFILTER_ON = 1;
+const LPC_POSTFILTER_OFF = 3;
+
 export type Application = (typeof Application)[keyof typeof Application];
 export type Signal = (typeof Signal)[keyof typeof Signal];
 export type Bitrate = number | "auto" | "max";
@@ -100,7 +107,21 @@ export type EncoderOptions = CodecOptions & {
 };
 
 export type DecoderOptions = CodecOptions & {
+  /**
+   * The MLow Companion's weights: the DNNw container the WhatsApp client
+   * fetches at runtime (`mlow_companion_v1`). Not shipped with this library;
+   * pass the bytes you have. Attaches the neural post-filter the client runs
+   * inside its decoder, on 20 ms wideband mono MLow frames; other frames
+   * decode as before. Requires `useSmpl: true`. The bytes are copied, so the
+   * array can be released once the decoder exists.
+   */
+  companionModel?: Uint8Array;
   maxFrameSize?: number;
+  /**
+   * The codec's classical LPC postfilter. `true` enables it at every rate;
+   * `false` disables it at every rate, which is what the WhatsApp client does.
+   * Unset leaves the codec default: off for wideband, on for super-wideband.
+   */
   useLpcPostfilter?: boolean;
   useSmpl?: boolean;
 };
@@ -238,6 +259,19 @@ export type OpusDecoderHandle = {
   decodePacketLoss(frameSize?: number): Int16Array;
   decodePacketLossFloat(frameSize?: number): Float32Array;
   decoderCtl(request: number, value: number): void;
+  /** Whether an MLow Companion is attached. */
+  readonly hasCompanion: boolean;
+  /**
+   * Attaches the MLow Companion built from `model`, replacing one already
+   * attached, or detaches it with `null`. Only MLow (SMPL) streams reach it.
+   * A replaced Companion starts from a clean state.
+   */
+  setCompanionModel(model: Uint8Array | null): void;
+  /**
+   * Clears the attached Companion's recurrent state and filter memories.
+   * Call it where the stream restarts; decoding carries on otherwise.
+   */
+  resetCompanion(): void;
   free(): void;
   [Symbol.dispose](): void;
 };
@@ -286,6 +320,7 @@ type NormalizedEncoderOptions = {
 
 type NormalizedDecoderOptions = {
   channels: ChannelCount;
+  companionModel: Uint8Array | undefined;
   maxFrameSize: number;
   sampleRate: SampleRate;
   useLpcPostfilter: boolean | undefined;
@@ -879,6 +914,7 @@ class WasmOpusDecoder implements OpusDecoderHandle {
   readonly maxFrameSize: number;
   readonly sampleRate: SampleRate;
   readonly useSmpl: boolean;
+  #companionPtr = 0;
   #freed = false;
   #module: LibmlowModule;
   #packetBytes = 0;
@@ -908,10 +944,16 @@ class WasmOpusDecoder implements OpusDecoderHandle {
     // release it rather than leaking the state.
     try {
       if (options.useLpcPostfilter !== undefined) {
-        this.decoderCtl(DecoderCtl.SetUseLpcPostfilter, options.useLpcPostfilter ? 1 : 0);
+        this.decoderCtl(
+          DecoderCtl.SetUseLpcPostfilter,
+          options.useLpcPostfilter ? LPC_POSTFILTER_ON : LPC_POSTFILTER_OFF,
+        );
       }
       if (options.useSmpl) {
         this.decoderCtl(DecoderCtl.SetUseSmpl, 1);
+      }
+      if (options.companionModel !== undefined) {
+        this.setCompanionModel(options.companionModel);
       }
       // Size for the float path up front so alternating decode/decodeFloat
       // never reallocates, and the hot path never calls malloc.
@@ -919,8 +961,69 @@ class WasmOpusDecoder implements OpusDecoderHandle {
     } catch (error) {
       this.#freeScratch();
       module._oc_destroy_decoder(this.#ptr);
+      this.#destroyCompanion();
       this.#freed = true;
       throw error;
+    }
+  }
+
+  get hasCompanion(): boolean {
+    return this.#companionPtr !== 0;
+  }
+
+  setCompanionModel(model: Uint8Array | null): void {
+    this.#assertLive();
+    if (model === null) {
+      if (this.#companionPtr !== 0) {
+        const code = this.#module._oc_decoder_set_companion(this.#ptr, 0);
+        if (code < 0) {
+          throw createOpusError(this.#module, code, "setCompanionModel");
+        }
+        this.#destroyCompanion();
+      }
+      return;
+    }
+    validateCompanionModel(model, "model");
+    const module = this.#module;
+    const modelPtr = checkedMalloc(module, model.byteLength);
+    const errorPtr = checkedMalloc(module, 4);
+    let companionPtr = 0;
+    try {
+      module.HEAPU8.set(model, modelPtr);
+      companionPtr = module._oc_companion_create(modelPtr, model.byteLength, errorPtr);
+      const error = module.HEAP32[errorPtr >> 2] ?? 0;
+      if (!companionPtr || error !== 0) {
+        throw new CompanionError(error);
+      }
+      const code = module._oc_decoder_set_companion(this.#ptr, companionPtr);
+      if (code < 0) {
+        throw createOpusError(module, code, "setCompanionModel");
+      }
+    } catch (error) {
+      if (companionPtr !== 0) {
+        module._oc_companion_destroy(companionPtr);
+      }
+      throw error;
+    } finally {
+      module._free(errorPtr);
+      module._free(modelPtr);
+    }
+    // The decoder now points at the new one, so the old one is unreachable.
+    this.#destroyCompanion();
+    this.#companionPtr = companionPtr;
+  }
+
+  resetCompanion(): void {
+    this.#assertLive();
+    if (this.#companionPtr !== 0) {
+      this.#module._oc_companion_reset(this.#companionPtr);
+    }
+  }
+
+  #destroyCompanion(): void {
+    if (this.#companionPtr !== 0) {
+      this.#module._oc_companion_destroy(this.#companionPtr);
+      this.#companionPtr = 0;
     }
   }
 
@@ -1043,6 +1146,7 @@ class WasmOpusDecoder implements OpusDecoderHandle {
     }
     this.#freeScratch();
     this.#module._oc_destroy_decoder(this.#ptr);
+    this.#destroyCompanion();
     this.#freed = true;
   }
 
@@ -1145,6 +1249,42 @@ export class OpusError extends Error {
     this.operation = operation;
   }
 }
+
+/**
+ * The MLow Companion rejected its model. Its codes are its own and overlap
+ * Opus's numerically, which is why this is not an {@link OpusError}.
+ */
+export class CompanionError extends Error {
+  readonly code: number;
+  readonly codeName: CompanionErrorCodeName | undefined;
+
+  constructor(code: number) {
+    const codeName = (Object.keys(CompanionErrorCode) as CompanionErrorCodeName[]).find(
+      (name) => CompanionErrorCode[name] === code,
+    );
+    super(`MLow Companion: ${COMPANION_ERROR_MESSAGES[code] ?? `error ${code}`}`);
+    this.name = "CompanionError";
+    this.code = code;
+    this.codeName = codeName;
+  }
+}
+
+/** `COMPANION_*` in native/companion.h. */
+export const CompanionErrorCode = {
+  BadArg: -1,
+  AllocFail: -2,
+  BadModel: -3,
+  MissingTensor: -4,
+} as const;
+
+export type CompanionErrorCodeName = keyof typeof CompanionErrorCode;
+
+const COMPANION_ERROR_MESSAGES: Record<number, string> = {
+  [CompanionErrorCode.BadArg]: "invalid argument",
+  [CompanionErrorCode.AllocFail]: "memory allocation failed",
+  [CompanionErrorCode.BadModel]: "the model is not a valid Companion container",
+  [CompanionErrorCode.MissingTensor]: "the model lacks a tensor the Companion needs",
+};
 
 export const OpusErrorCode = {
   BadArg: -1,
@@ -1488,7 +1628,30 @@ function normalizeDecoderOptions(options: DecoderOptions): NormalizedDecoderOpti
   validateCodecOptions({ channels, sampleRate });
   const maxFrameSize = options.maxFrameSize ?? samplesForDuration(sampleRate, MAX_PACKET_DURATION_MS);
   validateDecodeCapacity(maxFrameSize, sampleRate, "maxFrameSize");
-  return { channels, maxFrameSize, sampleRate, useLpcPostfilter: options.useLpcPostfilter, useSmpl: options.useSmpl === true };
+  const useSmpl = options.useSmpl === true;
+  if (options.companionModel !== undefined) {
+    validateCompanionModel(options.companionModel, "companionModel");
+    if (!useSmpl) {
+      throw new RangeError("companionModel requires useSmpl: true");
+    }
+  }
+  return {
+    channels,
+    companionModel: options.companionModel,
+    maxFrameSize,
+    sampleRate,
+    useLpcPostfilter: options.useLpcPostfilter,
+    useSmpl,
+  };
+}
+
+function validateCompanionModel(model: unknown, name: string): asserts model is Uint8Array {
+  if (!(model instanceof Uint8Array)) {
+    throw new TypeError(`${name} must be a Uint8Array`);
+  }
+  if (model.byteLength === 0) {
+    throw new RangeError(`${name} must not be empty`);
+  }
 }
 
 function samplesForDuration(sampleRate: SampleRate, durationMs: number): number {
