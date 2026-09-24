@@ -1,9 +1,11 @@
-/* MLow Companion: the neural post-filter the client runs on decoded audio.
+/* MLow Companion: the neural post-filter the client runs inside its decoder.
  *
  * Architecture is NoLACE (Opus 1.5): a feature network drives adaptive
- * convolutions and time-domain shaping that filter the decoded signal. It does
- * not synthesise audio, so a decoder without it produces the same speech, just
- * rougher at low bitrate.
+ * convolutions and time-domain shaping. Unlike the reference, which filters
+ * decoded speech, the client applies them to the decoder's *excitation*, just
+ * before LPC synthesis, and lets the synthesis filter turn the result into
+ * speech. It does not synthesise audio, so a decoder without it produces the
+ * same speech, just rougher at low bitrate.
  *
  * Weights live outside the binary, in a DNNw container fetched at runtime.
  */
@@ -115,16 +117,17 @@ typedef struct {
      nothing to carry across frames. */
   float num_bits;
 
-  /* An integer the decoder produced, copied into the last feature slot with no
-     transform at all: no logarithm, no scaling. Which of the decode's indices
-     it is has not been identified; the source is known to be an index rather
-     than an energy, which is why nothing is applied to it. */
-  float side_index;
+  /* The TOC's low-rate flag, 0 or 1, copied into the last feature slot with no
+     transform at all. Read out of the client's vector over a real decode of
+     the same speech at two rates: 1.0 on all 120 sub-frames at 8 kbps, where
+     the flag is set, and 0.0 on all 120 at 15 kbps, where it is not. */
+  float low_rate;
 
-  /* The decoder's excitation for this frame: what it feeds the LPC synthesis
-     filter, `fcb + adaptive + noise`, in the same units as `pcm`. The cepstrum
+  /* The decoder's excitation for this frame, exactly what its LPC synthesis
+     filter is about to read: `fcb + adaptive + noise`, and at the low rate
+     after the tilt and pulse shaping the decoder applies there. The cepstrum
      and the pitch autocorrelation are computed from this, **not** from the
-     decoded speech.
+     decoded speech, and it is the same signal companion_process filters.
 
      Measured against the client's own feature vector, read out of its memory
      on voiced frames with a warm decoder: computed from the decoded speech the
@@ -149,24 +152,22 @@ void companion_destroy(MlowCompanion *self);
    filter memories, without touching the weights. */
 void companion_reset(MlowCompanion *self);
 
-/* Filters one frame of decoded audio in place. `pcm` holds COMPANION_FRAME
-   samples; `state` carries the per-frame values read from the codec.
+/* Filters one frame of the decoder's excitation in place, before LPC
+   synthesis. `pcm` holds COMPANION_FRAME samples: the same samples as
+   `state->excitation`, which the features read before any filtering; `state`
+   carries the per-frame values read from the codec.
 
-   Samples are normalised to +/-1, not on the int16 scale. The scale is not a
-   convention we are free to pick: the shaping stage takes the logarithm of the
-   signal envelope, so changing it does not scale that stage's output, it
-   shifts it.
+   The excitation, not the speech: the client's first adaptive filter reads
+   the decoder's excitation sample for sample, correlation 1.00000 at scale
+   1.0000 over sixty frames of a real decode, where the synthesised speech
+   correlates 0.13 with it. Filtering the speech instead reproduces the
+   client's level and shape and gets the samples wrong: its contribution
+   correlated 0.69 with the client's, against 0.9998 once moved.
 
-   This contract previously said int16 and cited the client for it. That
-   citation was wrong - the reasoning behind it argued from the symptom
-   (normalised input drives the shaping's exponential past 1e12), which is a
-   deduction and not a measurement, and it was recorded as though measured. A
-   later reading of the client's decoder finds the float-to-int16 conversion in
-   its *final* stage, so everything upstream of it - features, adaptive filters
-   and this envelope - runs on +/-1.
-
-   The symptom that motivated the wrong contract is real and still unexplained:
-   see COMPANION-EVIDENCE.md. Do not resolve it by changing the scale back. */
+   Samples are on the codec's float scale, where speech runs +/-1, not the
+   int16 scale. The scale is not a convention we are free to pick: the shaping
+   stage takes the logarithm of the signal envelope, so changing it does not
+   scale that stage's output, it shifts it. */
 int companion_process(MlowCompanion *self, float *pcm, const CompanionFrameState *state);
 
 /* The feature vectors built for the most recent frame: COMPANION_SUBFRAMES of

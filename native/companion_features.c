@@ -27,22 +27,32 @@ void companion_mag_spectrum(
   float *out,
   const float *input,
   int size,
+  int used,
   const float *cos_table,
   const float *sin_table
 ) {
   /* A direct transform, unnormalised. The reference scales its result by the
      transform size, but only because its FFT divides by it first; the two
-     agree, and multiplying here as well would be a factor of `size` too much. */
+     agree, and multiplying here as well would be a factor of `size` too much.
+
+     Samples from `used` on are zero and skipped: a zero adds nothing to either
+     sum, so the result is bit for bit the one over all `size`. The predictor
+     polynomial is 17 samples padded to 320, and transforming the padding was
+     most of this function's cost. */
   const int bins = size / 2 + 1;
   for (int k = 0; k < bins; k++) {
     float re = 0.0f;
     float im = 0.0f;
-    for (int n = 0; n < size; n++) {
-      /* cos(2*pi*k*n/size) has period `size` in k*n, so one table serves every
-         bin. */
-      const int angle = (k * n) % size;
+    /* cos(2*pi*k*n/size) has period `size` in k*n, so one table serves every
+       bin, indexed by k*n mod size: kept incrementally, since k < size. */
+    int angle = 0;
+    for (int n = 0; n < used; n++) {
       re += input[n] * cos_table[angle];
       im -= input[n] * sin_table[angle];
+      angle += k;
+      if (angle >= size) {
+        angle -= size;
+      }
     }
     out[k] = (float)sqrt((double)re * re + (double)im * im);
   }
@@ -103,7 +113,7 @@ void companion_clean_spectrum(
     poly[i + 1] = -lpc[i];
   }
 
-  companion_mag_spectrum(magnitude, poly, COMPANION_FRAME, cos_table, sin_table);
+  companion_mag_spectrum(magnitude, poly, COMPANION_FRAME, order + 1, cos_table, sin_table);
 
   /* Invert: the polynomial is the whitening filter, and what conditions the
      network is the envelope it whitens.
@@ -158,7 +168,7 @@ void companion_cepstrum(
     windowed[n] = window[n] * signal[n - COMPANION_FRAME / 2];
   }
 
-  companion_mag_spectrum(magnitude, windowed, COMPANION_FRAME, cos_table, sin_table);
+  companion_mag_spectrum(magnitude, windowed, COMPANION_FRAME, COMPANION_FRAME, cos_table, sin_table);
   companion_filterbank(
     bands, magnitude, companion_noisy_centres, companion_noisy_weights, COMPANION_NOISY_BANDS
   );
@@ -244,7 +254,11 @@ int companion_pitch_index(float lag_a, float lag_b, int table_rows) {
        than a valid one. */
     return COMPANION_NO_PITCH_VALUE;
   }
-  int index = (int)lrintf((lag_a + lag_b) * 0.5f);
+  /* Half rounds up. `lrintf` rounds half to even, which disagreed with the
+     client on every sub-frame whose two lags average to a half: over a real
+     decode, 15 of 120 sub-frames came out one row low. `floor(x + 0.5)` matches
+     the client's index on all 88 voiced sub-frames. */
+  int index = (int)floorf((lag_a + lag_b) * 0.5f + 0.5f);
   if (index < 0) {
     index = 0;
   }

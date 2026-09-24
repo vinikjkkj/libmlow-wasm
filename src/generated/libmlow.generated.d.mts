@@ -6,6 +6,9 @@ type LibmlowModule = {
   UTF8ToString: (ptr: number) => string;
   _free: (ptr: number) => void;
   _malloc: (size: number) => number;
+  _oc_companion_create: (modelPtr: number, modelBytes: number, errorPtr: number) => number;
+  _oc_companion_destroy: (companionPtr: number) => void;
+  _oc_companion_reset: (companionPtr: number) => void;
   _oc_create_decoder: (sampleRate: number, channels: number, errorPtr: number) => number;
   _oc_create_encoder: (
     sampleRate: number,
@@ -32,6 +35,7 @@ type LibmlowModule = {
   _oc_destroy_decoder: (decoderPtr: number) => void;
   _oc_destroy_encoder: (encoderPtr: number) => void;
   _oc_decoder_ctl: (decoderPtr: number, request: number, value: number) => number;
+  _oc_decoder_set_companion: (decoderPtr: number, companionPtr: number) => number;
   _oc_encode: (
     encoderPtr: number,
     pcmPtr: number,

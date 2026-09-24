@@ -577,11 +577,9 @@ static void build_subframe_features(
       log10f(value > 1e-5f ? value : 1e-5f) * slope[e] + intercept[e];
   }
 
-  /* The last slot takes an integer from the decoder straight through. It is an
-     index, not an energy, so unlike the three above it gets no logarithm and no
-     scaling: applying one would be the same class of mistake as reading the
-     reference's layout here in the first place. */
-  f[COMPANION_LOG_GAIN_START] = state->side_index;
+  /* The last slot takes the low-rate flag straight through: no logarithm and
+     no scaling, unlike the three above. */
+  f[COMPANION_LOG_GAIN_START] = state->low_rate;
 
   const CompanionLayer *embedding = &self->layers[L_PITCH_EMBEDDING];
   memcpy(

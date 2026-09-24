@@ -1,4 +1,7 @@
 #include <opus.h>
+#include <opus_smpl_hook.h>
+
+#include "companion_decoder.h"
 
 /* MLOW_MULTI_TOC_MASK: SID and FEC bits, marking a multiframe packet. */
 #define MLOW_MULTIFRAME_MARKER 0x82
@@ -498,6 +501,41 @@ void oc_global_free(void) {
     }
   }
   opus_global_free();
+}
+
+/* The MLow Companion. One instance filters one decoder's stream: it carries
+   that stream's recurrent state and filter memories, so two decoders cannot
+   share one. The model buffer is only read by oc_companion_create. */
+MlowCompanion *oc_companion_create(const unsigned char *model, int model_bytes, int *error) {
+  if (model == 0 || model_bytes <= 0) {
+    if (error != 0) {
+      *error = COMPANION_BAD_ARG;
+    }
+    return 0;
+  }
+  return companion_create(model, (size_t)model_bytes, error);
+}
+
+void oc_companion_destroy(MlowCompanion *companion) {
+  companion_destroy(companion);
+}
+
+void oc_companion_reset(MlowCompanion *companion) {
+  if (companion != 0) {
+    companion_reset(companion);
+  }
+}
+
+/* Registers `companion` as the decoder's per-frame SMPL hook, or removes it
+   when `companion` is null. The decoder only calls it on 20 ms wideband MLow
+   frames; everything else decodes as before. OPUS_RESET_STATE does not remove
+   it, and does not reset the companion either. */
+int oc_decoder_set_companion(OpusDecoder *decoder, MlowCompanion *companion) {
+  if (companion == 0) {
+    return opus_decoder_ctl(decoder, OPUS_SET_SMPL_FRAME_HOOK_REQUEST, (const opus_smpl_frame_hook *)0);
+  }
+  const opus_smpl_frame_hook hook = { companion_decoder_hook, companion };
+  return opus_decoder_ctl(decoder, OPUS_SET_SMPL_FRAME_HOOK_REQUEST, &hook);
 }
 
 const char *oc_strerror(int code) {
