@@ -5329,6 +5329,125 @@ every structural measure lands in its neighbourhood at once: `peak^2/energy`
 So the target has a number on it. Whatever makes the perturbation small has to
 land somewhere equivalent to `g` between 0.10 and 0.15.
 
+## Inside the decoder: the Companion filters the excitation, and matches end to end
+
+**This supersedes the end-to-end table in "The port matches the client"
+below**, whose agreement was in level and shape only.
+
+The Companion now runs inside the pinned decoder, through a per-frame hook the
+build patches into `smpl_core_decode` (`scripts/opus-mlow-patches.mjs`), and
+is compared with the client on the same packets: the client's mode 6 against
+mode 3, this build with the hook against without it.
+
+### The client filters the excitation, not the speech
+
+Read at the client's first adaptive convolution, the signal it filters is the
+decoder's **excitation**, sample for sample, correlation **1.00000 at scale
+1.0000** over sixty frames, median relative error 5e-7, and not the
+synthesised speech, which correlates 0.13 with it and sits 13 to 20 times
+louder. So the client runs the network between building the excitation and
+running it through the LPC synthesis filter, and the synthesis filter turns
+the filtered excitation into speech.
+
+This build filtered the synthesised speech, and that was invisible to every
+aggregate measure: the effective filter came out at rms 288 against the
+client's 281, `peak^2/energy` 0.907 against 0.896, cost -0.27 dB against
+-0.16. Sample for sample its contribution correlated **0.69** with the
+client's. A level-and-shape match is not a match.
+
+With the hook moved to the excitation, on the same packets:
+
+| | 15 kbps | 8 kbps (low rate) |
+| --- | --- | --- |
+| contribution, correlation with the client's | **0.99980** | **0.99982** |
+| contribution, SNR against the client's | 33.7 dB | 34.1 dB |
+| contribution rms, this build / client | 282.4 / 281.1 | 428.2 / 426.4 |
+| filtered output against the client's | 35.7 dB | 34.7 dB |
+| dry output against the client's | 35.7 dB | 34.6 dB |
+| against `clean.s16`, this build / client | +2.08 / +2.09 dB | +1.90 / +1.93 dB |
+
+The filtered outputs agree exactly as well as the dry ones do: what separates
+them is the two codecs' own disagreement, not the Companion. On the 107 frames
+whose dry output is bit-identical the filtered output differs by a median of 4
+LSB, worst 26: the client's int8 quantisation. The effective filter at 15
+kbps: peak +0.9030 against +0.9031, `peak^2/energy` 0.8963 against 0.8962, DC
+1.1202 against 1.1201, residual 8.23% against 8.24%.
+
+The decoder's own history does not see the filtered excitation. The client's
+feature vector in mode 6, whose cepstrum and pitch correlation read the
+excitation of every later frame, matches this build's unfiltered decode to
+1e-5, so the adaptive codebook and the PLC take the excitation as decoded, and
+only the synthesis filter's memory carries the filtered one forward. The hook
+reproduces exactly that.
+
+### At the low rate, after the tilt
+
+Below the low-rate threshold (12 kbps at 20 ms wideband) the decoder tilts
+voiced excitation and shapes unvoiced pulses before synthesis. The client
+filters the excitation **after** both: against the client's input over the
+sub-frames where the two differ, the excitation after the tilt reads a median
+relative error of 1.9% (41.0 dB), before it 20.9%. The 1.9% is not a different
+tilt, a two-tap fit to the client's input gives 0.8352 and 0.1592 against
+the codec's 0.84 and 0.16, and moves the SNR by 0.7 dB, but the two codecs
+decoding low-rate excitation slightly differently, as their dry outputs do.
+
+The features read the same signal. At 8 kbps, with the excitation from before
+the tilt, the cepstrum's worst error against the client is 0.77 and the pitch
+correlation's 0.19; from after it, 0.044 and 0.0093.
+
+### Slot 92 is the low-rate flag
+
+`[92]`, taken straight through with no transform, reads **1.0 on all 120
+sub-frames at 8 kbps and 0.0 on all 120 at 15 kbps** in the client's own
+vector: the TOC's `low_rate`. `CompanionFrameState.side_index` is now
+`low_rate`.
+
+### What the decoder hands over, verified against the client's vector
+
+At 15 kbps, over sub-frames 20 to 119, every slot of the 165 against the
+client's:
+
+| block | correlation | worst error |
+| --- | --- | --- |
+| `[0:64]` clean spectrum | 1.00000 | 5.7e-5 |
+| `[64:82]` cepstrum | 1.00000 | 1.9e-5 |
+| `[82:87]` autocorrelation | 1.00000 | 2.4e-7 |
+| `[87:89]` ltp gains | 1.00000 | 0 |
+| `[89:92]` decode context | 1.00000 | 1.1e-3 |
+| `[92]` low rate | | 0 |
+| `[93:157]` pitch embedding | 1.00000 | 0 |
+| `[157:165]` bit count | 1.00000 | 8.2e-7 |
+
+Four mappings had to be read off the client to get there, each exact once
+right:
+
+- **The ltp gains are the adaptive-codebook gains as dequantised**, `[0, g1,
+  g0, g1, 0]`, before the CELP synthesis adjusts them and **whatever the
+  voicing**. Zeroing them on unvoiced frames, as the old harness did, gave
+  0.969. The decoder writes none in a DTX frame, which reads zeros.
+- **The bit count is the range decoder's position after the frame's
+  parameters minus its position at the frame's start**: `ec_tell` against
+  the frame's own starting point, not the packet size.
+- **The decode context's second slot is the fixed codebook's energy alone**,
+  plus a 1e-5 floor: 1.00000 and a worst error of 0, where the whole
+  excitation's energy reads 0.84.
+- **The pitch index rounds its half up**, `floor(x + 0.5)`. `lrintf`, half to
+  even, put 15 of 120 sub-frames one row low.
+
+At 8 kbps the whole vector reads 1.00000 too, with the cepstrum's 0.044 the
+worst: the codecs' disagreement again.
+
+### Where it runs
+
+On 20 ms wideband mono MLow frames. Shorter frames, super-wideband frames and
+stereo streams do not call the hook: a stereo stream runs the core decoder
+once per channel, and one Companion carries one stream's state. A stereo
+input sent below about 24 kbps arrives as a mono stream and is filtered.
+
+Through the WebAssembly build the result is the native one: dry output
+bit-identical, filtered output 85.7 dB from the native (98.7% of samples
+identical), contribution correlating 0.99980 with the client's.
+
 ## The port matches the client, verified layer by layer
 
 Every stage below was checked by reading the client's buffers while its network

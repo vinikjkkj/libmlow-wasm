@@ -93,7 +93,7 @@ encoder.encoderCtl(EncoderCtl.SetForceChannels, 2);
 | --- | --- | --- |
 | `SetGain` | `OPUS_SET_GAIN` | Output gain in Q8 dB (256 = +3 dB). |
 | `SetPhaseInversionDisabled` | `OPUS_SET_PHASE_INVERSION_DISABLED` | Disable stereo phase inversion. |
-| `SetUseLpcPostfilter` | `OPUS_SET_USE_LPC_POSTFILTER` | `useLpcPostfilter` on `createDecoder()` |
+| `SetUseLpcPostfilter` | `OPUS_SET_USE_LPC_POSTFILTER` | A mode, not a flag: 0 wideband off and super-wideband on (default), 1 both on, 2 wideband only, 3 both off. `useLpcPostfilter` on `createDecoder()` sends 1 or 3. |
 | `SetUseSmpl` | `OPUS_SET_USING_SMPL` | `useSmpl: true` on `createDecoder()` |
 
 ```ts

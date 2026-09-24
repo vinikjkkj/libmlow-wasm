@@ -180,6 +180,11 @@ For the packing step and the multiframe byte layout, see
 [Repacketizer](docs/repacketizer.md). For the redundancy WhatsApp adds on a bad
 network, see [RED (secondary encoder)](docs/packet-loss.md#red-secondary-encoder).
 
+WhatsApp's decoder also runs a neural post-filter on MLow, the Companion. Pass
+its weights as `companionModel` (with `useSmpl: true`) to decode the way the
+client does; they are WhatsApp's and not shipped here. See
+[The MLow Companion](docs/decoding.md#the-mlow-companion) for what it costs.
+
 ## Relationship to upstream
 
 | | [libopus-wasm](https://github.com/openclaw/libopus-wasm) | **libmlow-wasm** (this repo) |

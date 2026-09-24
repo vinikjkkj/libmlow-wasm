@@ -128,6 +128,41 @@ Passing an **empty** `Uint8Array` is a different mistake and throws a
 `RangeError` — use `null` (or `decodePacketLoss`) to signal a lost packet, not a
 zero-length buffer.
 
+## The MLow Companion
+
+WhatsApp's client runs a neural post-filter inside its MLow decoder, the
+Companion (NoLACE, from Opus 1.5). This library can run it too, reproducing
+the client's output: on the same packets its contribution correlates 0.9998
+with the client's.
+
+The weights are WhatsApp's (`mlow_companion_v1`, a DNNw container the client
+fetches at runtime) and are not shipped with this library. Pass the bytes:
+
+```ts
+const decoder = await createDecoder({
+  sampleRate: 16000,
+  channels: 1,
+  useSmpl: true,
+  useLpcPostfilter: false, // the client runs the Companion without it
+  companionModel: modelBytes,
+});
+```
+
+or attach it later with `decoder.setCompanionModel(modelBytes)`, and detach it
+with `setCompanionModel(null)`. The bytes are copied, so you can release
+them once the call returns. Call `decoder.resetCompanion()` where a stream
+restarts on the same decoder.
+
+It acts on 20 ms wideband mono MLow frames: what WhatsApp sends for voice.
+Other frames, super-wideband frames and stereo streams decode as they would
+without it.
+
+It is not free. In the WebAssembly build a 20 ms frame takes about 0.9 ms with
+it against 15 us without, 4.4% of one core per stream, and each Companion holds
+2.2 MiB against the decoder's 50 KiB. Creating one briefly copies the 754 KiB
+model into the module's heap as well. The classical LPC postfilter
+(`useLpcPostfilter: true`) costs 7 us per frame by comparison.
+
 ## Next
 
 - [Packet loss](packet-loss.md) — conceal dropped packets and recover with FEC.
