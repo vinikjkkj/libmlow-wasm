@@ -68,8 +68,8 @@ encoder.encoderCtl(4003, 0); // RangeError: not an allow-listed integer setter
 | `SetPhaseInversionDisabled` | `OPUS_SET_PHASE_INVERSION_DISABLED` | — |
 | `SetUseSmpl` | `OPUS_SET_USING_SMPL` | `useSmpl: true` on `createEncoder()` / `createDecoder()` |
 | `SetEncHpCutoff` | `OPUS_SET_ENC_HP_CUTOFF` | — |
-| `SetSecondaryComplexity` | `OPUS_SET_SECONDARY_COMPLEXITY` | — |
-| `SetSecondaryBitrate` | `OPUS_SET_SECONDARY_BITRATE` | — |
+| `SetSecondaryComplexity` | `OPUS_SET_SECONDARY_COMPLEXITY` | `setSecondaryComplexity` |
+| `SetSecondaryBitrate` | `OPUS_SET_SECONDARY_BITRATE` | `setSecondaryBitrate` |
 | `SetMlowSubframeImp` | `OPUS_SET_MLOW_SUBFRAME_IMP` | — |
 | `SetMlowUseSpActFlat` | `OPUS_SET_MLOW_USE_SP_ACT_FLAT` | — |
 | `SetMlowVadNlUpdSpeed` | `OPUS_SET_MLOW_VAD_NL_UPD_SPEED` | — |

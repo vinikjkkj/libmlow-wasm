@@ -46,6 +46,7 @@ type LibmlowModule = {
     packetPtr: number,
     maxPacketBytes: number,
   ) => number;
+  _oc_encode_secondary: (encoderPtr: number, packetPtr: number, maxPacketBytes: number) => number;
   _oc_encoder_ctl: (encoderPtr: number, request: number, value: number) => number;
   _oc_encoder_ctl_get_bitrate: (encoderPtr: number) => number;
   _oc_encoder_ctl_get_in_dtx: (encoderPtr: number) => number;
@@ -81,6 +82,50 @@ type LibmlowModule = {
     packetLength: number,
     sampleRate: number,
   ) => number;
+  _oc_mlow_packet_info: (
+    packetPtr: number,
+    packetLength: number,
+    sampleRate: number,
+    outPtr: number,
+  ) => number;
+  _oc_packet_info: (
+    packetPtr: number,
+    packetLength: number,
+    sampleRate: number,
+    outPtr: number,
+  ) => number;
+  _oc_mlow_strip_padding_flag: (packetPtr: number, packetLength: number) => number;
+  _oc_mlow_repacketize: (
+    repacketizerPtr: number,
+    framesPtr: number,
+    lengthsPtr: number,
+    count: number,
+    useMlow: number,
+    packetPtr: number,
+    maxPacketBytes: number,
+  ) => number;
+  _oc_repacketizer_cat: (
+    repacketizerPtr: number,
+    packetPtr: number,
+    packetLength: number,
+  ) => number;
+  _oc_repacketizer_create: () => number;
+  _oc_repacketizer_destroy: (repacketizerPtr: number) => void;
+  _oc_repacketizer_get_nb_frames: (repacketizerPtr: number) => number;
+  _oc_repacketizer_init: (repacketizerPtr: number) => void;
+  _oc_repacketizer_out: (
+    repacketizerPtr: number,
+    packetPtr: number,
+    maxPacketBytes: number,
+  ) => number;
+  _oc_repacketizer_out_range: (
+    repacketizerPtr: number,
+    begin: number,
+    end: number,
+    packetPtr: number,
+    maxPacketBytes: number,
+  ) => number;
+  _oc_repacketizer_set_using_mlow: (repacketizerPtr: number, useMlow: number) => void;
   _oc_strerror: (code: number) => number;
 };
 

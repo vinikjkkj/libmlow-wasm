@@ -37,7 +37,9 @@
   "scripts": {
     "build": "pnpm build:wasm && tsc -p tsconfig.json && node scripts/copy-generated.mjs",
     "build:wasm": "node scripts/build-opus-mlow-wasm.mjs",
-    "benchmark": "node scripts/benchmark-wasm.mjs",
+    "benchmark": "pnpm build && node scripts/benchmark-wasm.mjs",
+    "codec-vectors": "node scripts/codec-vectors.mjs",
+    "check-golden": "node scripts/check-golden.mjs",
     "clean": "rm -rf dist .cache",
     "docs:build": "node scripts/build-docs-site.mjs",
     "prepack": "pnpm build",

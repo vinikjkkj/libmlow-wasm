@@ -17,6 +17,19 @@ const buildDir = path.join(cacheDir, `opus-mlow-${opusRelease}-build`);
 const generatedDir = path.join(repoRoot, "src", "generated");
 const outputPath = path.join(generatedDir, "libmlow.generated.mjs");
 const useCmake = process.platform === "win32" || process.env.LIBMLOW_WASM_BUILD_CMAKE === "1";
+/**
+ * Applied to the codec in both build paths so autotools and CMake stop
+ * producing different binaries: autoconf defaults to `-g -O2`, shipping debug
+ * info that the CMake path does not carry.
+ *
+ * Deliberately NOT `-O3`, `-flto` or `-DNDEBUG`. AGENTS.md records that
+ * `-O3 -flto` through these flags made the first decode hang, and that the
+ * `-DNDEBUG` variant hung as well. Measuring here also showed no speed gain
+ * beyond trial noise from any of them, so there is nothing to weigh against
+ * that risk. Optimisation stays where the known-good profile puts it: the
+ * final `emcc -O3 -flto` at link time.
+ */
+const OPUS_RELEASE_CFLAGS = "-O2";
 
 const exportedFunctions = [
   "_free",
@@ -29,6 +42,7 @@ const exportedFunctions = [
   "_oc_destroy_encoder",
   "_oc_encode",
   "_oc_encode_float",
+  "_oc_encode_secondary",
   "_oc_decoder_ctl",
   "_oc_encoder_ctl",
   "_oc_encoder_ctl_get_bitrate",
@@ -42,6 +56,7 @@ const exportedFunctions = [
   "_oc_packet_get_nb_frames",
   "_oc_packet_get_nb_samples",
   "_oc_packet_get_samples_per_frame",
+  "_oc_packet_info",
   "_oc_packet_parse",
   "_oc_packet_validate_decode",
   "_oc_mlow_packet_get_bandwidth",
@@ -52,7 +67,18 @@ const exportedFunctions = [
   "_oc_mlow_packet_parse",
   "_oc_mlow_packet_has_vad_flag",
   "_oc_mlow_packet_has_fec_content",
+  "_oc_mlow_packet_info",
+  "_oc_mlow_strip_padding_flag",
   "_oc_mlow_packet_parse_toc",
+  "_oc_mlow_repacketize",
+  "_oc_repacketizer_cat",
+  "_oc_repacketizer_create",
+  "_oc_repacketizer_destroy",
+  "_oc_repacketizer_get_nb_frames",
+  "_oc_repacketizer_init",
+  "_oc_repacketizer_out",
+  "_oc_repacketizer_out_range",
+  "_oc_repacketizer_set_using_mlow",
   "_oc_strerror",
 ];
 
@@ -89,7 +115,9 @@ async function buildWithAutotools() {
       "--enable-static",
       "--host=wasm32-unknown-emscripten",
     ],
-    { cwd: buildDir },
+    // Without CFLAGS, autoconf falls back to `-g -O2` and ships debug info.
+    // No LDFLAGS: AGENTS.md rules out -flto through the codec's own flags.
+    { cwd: buildDir, env: { CFLAGS: OPUS_RELEASE_CFLAGS } },
   );
   await run("emmake", ["make", "-j", String(cpuCount())], { cwd: buildDir });
 
@@ -106,6 +134,25 @@ async function buildWithCmake() {
       "-B",
       buildDir,
       "-DCMAKE_BUILD_TYPE=Release",
+      // The Emscripten toolchain file overrides the Release flags (historically
+      // to -O2), so set them explicitly. -flto here is what makes the -flto in
+      // linkWrapper() do real work: without it the static lib ships as finished
+      // wasm objects and the link-time LTO only sees the wrapper's thunks.
+      `-DCMAKE_C_FLAGS_RELEASE=${OPUS_RELEASE_CFLAGS}`,
+      // Left at the upstream default (ON), which compiles the SMPL DSP core with
+      // -Os. Turning it off looked like the big win on paper, but measured it
+      // moved encode by ~1%, inside trial noise, while adding 205 KB (+34%)
+      // to the bundle. The -O3 wasm-opt pass at link time recovers the rest.
+      `-DOPUS_REDUCE_SMPL_BINARY_SIZE=${boolFlag("LIBMLOW_WASM_SMPL_FULL_OPT") === "ON" ? "OFF" : "ON"}`,
+      // Opt-in: unlocks the -Ofast the codec already marks for its eight
+      // hottest files. Fast, but the output stops being bit-exact and the
+      // float approximations also reach the plain Opus rate control, so it is
+      // off until someone runs test vectors against it.
+      `-DOPUS_FLOAT_APPROX=${boolFlag("LIBMLOW_WASM_FLOAT_APPROX")}`,
+      // Opt-in: drops the SMPL asserts, but also validate_opus_decoder and
+      // validate_celt_decoder, which guard against malformed packets. This
+      // library decodes bytes off the network, so it stays on by default.
+      `-DOPUS_HARDENING=${boolFlag("LIBMLOW_WASM_HARDENING", true)}`,
       "-DOPUS_BUILD_TESTING=OFF",
       "-DOPUS_BUILD_PROGRAMS=OFF",
       "-DOPUS_BUILD_SHARED_LIBRARY=OFF",
@@ -148,8 +195,27 @@ async function linkWrapper(libPath, includeDirs) {
       "ALLOW_MEMORY_GROWTH=1",
       "-s",
       "ASSERTIONS=0",
+      // Kept at 8 MB per AGENTS.md ("STACK_SIZE=8388608 for SMPL stack depth").
+      // A static trace suggested ~140 KB was the deepest use, but that trace did
+      // not exercise SMPL, and the note records a measured requirement.
       "-s",
       "STACK_SIZE=8388608",
+      // No INITIAL_MEMORY override: it has to exceed STACK_SIZE, and the 8 MB
+      // stack above leaves the Emscripten default as the smallest legal choice
+      // anyway.
+      // The hot path never allocates (Opus uses stack VLAs; the JS side caches
+      // its scratch pointers), so the simpler allocator is enough.
+      "-s",
+      "MALLOC=emmalloc",
+      "-s",
+      "FILESYSTEM=0",
+      // Drops eval/new Function, which makes the module usable under a strict CSP.
+      "-s",
+      "DYNAMIC_EXECUTION=0",
+      "-s",
+      "INCOMING_MODULE_JS_API=[]",
+      "-s",
+      "TEXTDECODER=2",
       "-s",
       "ENVIRONMENT=web,node",
       "-s",
@@ -227,15 +293,25 @@ async function verifySha256(filePath, expected) {
   }
 }
 
+/** Reads an opt-in build switch from the environment, as ON/OFF for CMake. */
+function boolFlag(name, defaultOn = false) {
+  const value = process.env[name];
+  if (value === undefined) {
+    return defaultOn ? "ON" : "OFF";
+  }
+  return value === "1" || value.toLowerCase() === "on" ? "ON" : "OFF";
+}
+
 function cpuCount() {
   return Math.max(1, Math.min(8, Number(process.env.LIBMLOW_WASM_BUILD_JOBS) || 4));
 }
 
 async function run(command, args, options) {
   await new Promise((resolve, reject) => {
+    const { env: extraEnv, ...spawnOptions } = options ?? {};
     const child = spawn(command, args, {
-      ...options,
-      env: toolchainEnv(),
+      ...spawnOptions,
+      env: { ...toolchainEnv(), ...extraEnv },
       stdio: "inherit",
     });
     child.on("error", (error) => {

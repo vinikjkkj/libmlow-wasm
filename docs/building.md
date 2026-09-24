@@ -28,7 +28,7 @@ pnpm build
 `pnpm build` runs three steps:
 
 1. `build:wasm` — `node scripts/build-opus-mlow-wasm.mjs` downloads
-   [**opus_mlow 1.0.0**](https://github.com/edgardmessias/opus_mlow/releases/tag/v1.0.0),
+   [**opus_mlow 1.0.1**](https://github.com/edgardmessias/opus_mlow/releases/tag/v1.0.1),
    verifies it against a pinned SHA-256, compiles it with Emscripten, and emits
    a single-file ES module into `src/generated/`. On Windows the script uses
    CMake (`emcmake`); on Linux/macOS it uses autotools (`emconfigure`).

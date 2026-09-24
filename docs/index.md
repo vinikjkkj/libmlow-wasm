@@ -52,10 +52,12 @@ hook, no second `.wasm` request, and no native build step at install time.
   sizes, and batches.
 - **Decoding audio.** [Decoding](decoding.md) covers output capacity and
   variable packet durations.
-- **Handling loss.** [Packet loss](packet-loss.md) walks through FEC and PLC for
-  realtime streams.
-- **Inspecting packets.** [Packet inspection](packet-info.md) reads a packet's
-  duration, frames, and bandwidth without decoding it.
+- **Handling loss.** [Packet loss](packet-loss.md) walks through FEC, PLC, and
+  the MLow RED secondary encoder for realtime streams.
+- **WhatsApp-style framing.** [Repacketizer](repacketizer.md) packs 20 ms MLow
+  frames into the multiframe packets WhatsApp puts on the wire.
+- **Inspecting packets.** [Packet inspection](packet-info.md) reports a packet's
+  duration, frames, bandwidth, and, for MLow, its TOC.
 - **Tuning quality and bitrate.** [Encoder tuning](encoder-tuning.md) and the
   [CTL reference](ctl.md).
 - **Coming from Discord.** [discord.js compatibility](discordjs.md) is a near
@@ -70,7 +72,7 @@ hook, no second `.wasm` request, and no native build step at install time.
 ## Project
 
 Fork of [libopus-wasm](https://github.com/openclaw/libopus-wasm), linking
-[opus_mlow](https://github.com/edgardmessias/opus_mlow) v1.0.0. Released under the
+[opus_mlow](https://github.com/edgardmessias/opus_mlow) v1.0.1. Released under the
 [MIT license](https://github.com/edgardmessias/libmlow-wasm/blob/main/LICENSE);
 opus_mlow carries the Opus BSD-style license, reproduced in
 [THIRD_PARTY_NOTICES](https://github.com/edgardmessias/libmlow-wasm/blob/main/THIRD_PARTY_NOTICES.md).
