@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { hideNodeImportsFromBundlers } from "./bundler-safe-imports.mjs";
 import { applyCodecPatches, codecPatchState } from "./opus-mlow-patches.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -106,6 +107,13 @@ await fs.mkdir(buildDir, { recursive: true });
 
 const { libPath, includeDirs } = useCmake ? await buildWithCmake() : await buildWithAutotools();
 await linkWrapper(libPath, includeDirs);
+// latin1 maps every byte to one character and back, so the embedded wasm
+// survives the round trip whatever its bytes are; the rewrite touches ASCII only.
+await fs.writeFile(
+  outputPath,
+  hideNodeImportsFromBundlers(await fs.readFile(outputPath, "latin1")),
+  "latin1",
+);
 
 console.log(`built ${path.relative(repoRoot, outputPath)} from opus_mlow ${opusRelease}`);
 

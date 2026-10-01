@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix bundling for the browser with no bundler configuration: the generated module's Node-only `import("node:module")` stopped esbuild (`Could not resolve "node:module"`) and webpack (`UnhandledSchemeError`), and made Vite warn. The build now rewrites the specifier into a runtime expression bundlers leave alone; `test/bundle.test.ts` bundles the library with esbuild, plain and minified.
 - Add `createRepacketizer()` for MLow multiframe packets (`pack`, `reset`, `add`, `getFrameCount`, `out`, `outRange`), up to 18 frames per packet; document it in [Repacketizer](docs/repacketizer.md).
 - Add the RED secondary encoder (`encodeSecondary()`, `setSecondaryBitrate()`, `setSecondaryComplexity()`); document it in [Packet loss](docs/packet-loss.md).
 - Add allocation-free `encodeInto` / `encodeFloatInto` / `decodeInto` / `decodeFloatInto`.

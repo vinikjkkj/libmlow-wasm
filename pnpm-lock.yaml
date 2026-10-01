@@ -14,6 +14,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: 4.0.14
         version: 4.0.14(vitest@4.0.14(@types/node@24.10.2))
+      esbuild:
+        specifier: 0.27.7
+        version: 0.27.7
       typescript:
         specifier: 5.9.3
         version: 5.9.3
