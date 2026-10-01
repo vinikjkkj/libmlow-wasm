@@ -348,9 +348,16 @@ async function run(command, args, options) {
     });
     child.on("error", (error) => {
       if (error.code === "ENOENT" && ["emcc", "emcmake", "emconfigure", "emmake"].includes(command)) {
+        // Node spawns only .exe/.com without a shell, and Emscripten ships
+        // .exe launchers on Windows from 6.0.0; 5.x has .bat ones only.
+        const batOnly =
+          process.platform === "win32" &&
+          existsSync(path.join(resolveEmsdkRoot(), "upstream", "emscripten", `${command}.bat`));
         reject(
           new Error(
-            `${command} not found. Activate Emscripten (emsdk_env) or set EMSDK / LIBMLOW_WASM_EMSDK.`,
+            batOnly
+              ? `${command} found only as ${command}.bat, which Node cannot spawn. Use Emscripten 6.0.0 or later on Windows.`
+              : `${command} not found. Activate Emscripten (emsdk_env) or set EMSDK / LIBMLOW_WASM_EMSDK.`,
           ),
         );
         return;

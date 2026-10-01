@@ -36,6 +36,7 @@ Fork of [openclaw/libopus-wasm](https://github.com/openclaw/libopus-wasm). Build
 - The unit suite proves the API contract; it does not prove the codec still produces the same bytes. Use both.
 - Windows builds use CMake + `emcmake` (autotools `configure` is not a native Win32 binary). Linux/macOS CI uses autotools by default; set `LIBMLOW_WASM_BUILD_CMAKE=1` to force CMake.
 - Emscripten: set `EMSDK` or `LIBMLOW_WASM_EMSDK` to the emsdk root (e.g. `C:\bin\emsdk` on Windows) if `emcc` is not already on `PATH`.
+- On Windows the build needs **Emscripten 6.0.0 or later**. The script spawns `emcmake` and friends without a shell, which finds `.exe` only, and 6.0.0 is the first release shipping `.exe` launchers; 5.x has `.bat` files and fails with `emcmake not found` even when activated.
 
 ## Codec pin (opus_mlow)
 
